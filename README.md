@@ -1,49 +1,53 @@
-# OLDX oneshot：口播一条龙
+# OLDX oneshot: one-shot talking-head videos
 
-把一段文案做成一条可以直接发的数字人口播视频，用你自己的声音和一张口播图片。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-三个阶段，前一阶段的产物是后一阶段的输入：
+Turn a script into a ready-to-post digital-human talking-head video, using your own cloned voice and a single portrait photo.
 
-| 阶段 | 做什么 | 产物 |
+Three stages; each stage's output is the next stage's input:
+
+| Stage | What it does | Output |
 |---|---|---|
-| 1 配音 | 复刻你的声音，把文案念出来，得到逐词时间 | 配音、逐词时间 |
-| 2 数字人 | 让一张照片开口说话，手势跟着内容走 | 人物视频 |
-| 3 包装 | 配图形动画、字幕、音效，用 Remotion 渲成片 | 成片 |
+| 1 Voice | Clones your voice, reads the script aloud, and produces word-level timestamps | Voice-over, word timings |
+| 2 Avatar | Makes a photo speak, with hand gestures that follow the content | Avatar video |
+| 3 Packaging | Adds motion graphics, captions and sound effects, rendered with Remotion | Final video |
 
-## 安装
+## Install
 
-这是一个 Claude Code 技能。克隆到技能目录即可：
+This is a Claude Code skill. Clone it into your skills directory:
 
 ```bash
 git clone https://github.com/yamanacn/oldx-oneshot.git ~/.claude/skills/oldx-oneshot
 ```
 
-然后在 Claude Code 里说“用 oldx-oneshot 帮我把这段文案做成口播视频”，并给它文案、5–10 秒的人声样本和一张口播图片。
+Then tell Claude Code something like "use oldx-oneshot to turn this script into a talking-head video", and give it the script, a 5-10 second voice sample, and a portrait photo.
 
-## 需要的密钥
+## API keys
 
-只需要两个，都由你自己提供（粘贴到对话里，Claude 会负责保存）：
+Two keys are needed. You provide both by pasting them into the chat; Claude saves them for you.
 
-- 阿里云百炼 API Key：配音和声音复刻
-- RunningHub API Key：生成数字人视频
+- Alibaba Cloud Bailian API key: voice-over and voice cloning
+- RunningHub API key: generates the avatar video
 
-数字人用的是已经搭好的工作流应用，不需要自己搭建，只填密钥即可。
+The avatar stage uses an already-built workflow app, so you do not need to build anything. Just provide the key.
 
-获取地址：
+Where to get them:
 
-- 百炼：https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key
-- RunningHub：使用我的专属邀请链接注册 https://www.runninghub.cn?inviteCode=150e26b6 ，可以额外获得 1000 RH 币。注册后登录，在页面上方选择“API”，在 API 页面点击左上方的“获取密钥”，再在密钥页面新建密钥并复制
+- Bailian: https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key
+- RunningHub: register with my invite link https://www.runninghub.cn?inviteCode=150e26b6 to get an extra 1000 RH coins. After signing in, choose "API" at the top of the page, click "获取密钥" (Get key) at the top left of the API page, then create a new key on the key page and copy it.
 
-接口地址已经写在脚本里，不用自己填。
+The API endpoints are already written in the scripts; you do not need to fill them in.
 
-## 环境
+Note: the RunningHub site and the prompts the skill shows to users are in Chinese.
 
-Python 3、ffmpeg、Node.js 缺什么会由 `scripts/setup_env.py` 自动装好。
+## Environment
 
-## 目录
+Missing Python packages, ffmpeg and Node.js are installed automatically by `scripts/setup_env.py`.
 
-- `SKILL.md`：技能入口
-- `references/`：三个阶段的详细说明
-- `scripts/`：各阶段脚本
-- `assets/remotion-template/`：包装用的 Remotion 工程模板
-- `tests/`：离线测试
+## Layout
+
+- `SKILL.md`: skill entry point
+- `references/`: detailed guides for the three stages
+- `scripts/`: scripts for each stage
+- `assets/remotion-template/`: Remotion project template used for packaging
+- `tests/`: offline tests
