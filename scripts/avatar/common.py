@@ -34,7 +34,8 @@ PLAN_CONCURRENCY = {
 }
 
 GUIDE_KEY = ("本机没有 RunningHub 的 API Key。请获取后，直接粘贴到对话输入框发送给我，其余的我来处理。\n"
-             "获取方式：登录 https://www.runninghub.cn?inviteCode=150e26b6 ，在个人中心里找到 API KEY 并复制。")
+             "获取方式：使用专属邀请链接注册 https://www.runninghub.cn?inviteCode=150e26b6 ，可以额外获得 1000 RH 币。\n"
+             "注册后登录，在页面上方选择“API”，在 API 页面点击左上方的“获取密钥”，再在密钥页面新建密钥，复制密钥粘贴过来即可。")
 PLAN_TABLE = ("RunningHub 各档会员的并发数：免费 1、轻享版 1、轻享版 Plus 1、基础版 2、基础版 Plus 3、"
               "专业版 3、专业版 Plus 5、Max 20（用 API KEY 时为 5）。")
 

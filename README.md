@@ -32,7 +32,7 @@ git clone https://github.com/yamanacn/oldx-oneshot.git ~/.claude/skills/oldx-one
 获取地址：
 
 - 百炼：https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key
-- RunningHub：https://www.runninghub.cn?inviteCode=150e26b6 ，登录后在个人中心找到 API KEY
+- RunningHub：使用我的专属邀请链接注册 https://www.runninghub.cn?inviteCode=150e26b6 ，可以额外获得 1000 RH 币。注册后登录，在页面上方选择“API”，在 API 页面点击左上方的“获取密钥”，再在密钥页面新建密钥并复制
 
 接口地址已经写在脚本里，不用自己填。
 
