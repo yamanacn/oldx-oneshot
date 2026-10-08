@@ -29,6 +29,13 @@ git clone https://github.com/yamanacn/oldx-oneshot.git ~/.claude/skills/oldx-one
 
 数字人用的是已经搭好的工作流应用，不需要自己搭建，只填密钥即可。
 
+获取地址：
+
+- 百炼：https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key
+- RunningHub：https://www.runninghub.cn?inviteCode=150e26b6 ，登录后在个人中心找到 API KEY
+
+接口地址已经写在脚本里，不用自己填。
+
 ## 环境
 
 Python 3、ffmpeg、Node.js 缺什么会由 `scripts/setup_env.py` 自动装好。
