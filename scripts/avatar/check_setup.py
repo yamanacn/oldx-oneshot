@@ -4,7 +4,7 @@
   python check_setup.py --lock           # 把默认密钥文件设为仅当前用户可读
   python check_setup.py --set-plan 基础版Plus      # 记录会员档位，并发数自动对应
   python check_setup.py --set-concurrency 3        # 或直接给并发数
-  python check_setup.py --set-app-id <应用ID>      # 用自己账号发布的应用
+  python check_setup.py --set-app-id <应用ID>      # 一般用不到：默认应用已内置，只有用户明确要换应用时才用
 
 退出码：0 齐了；3 没有 Key（打印引导文案）；5 没有记录会员档位（打印档位表）。
 """

@@ -18,7 +18,7 @@ RATIOS = {"16:9": (16, 9), "9:16": (9, 16), "1:1": (1, 1), "3:4": (3, 4), "4:3":
 SIZE_MIN, SIZE_MAX = 256, 2144   # 边长上限/下限，且必须是 32 的倍数
 
 BASE = "https://www.runninghub.cn/openapi/v2"
-DEFAULT_APP_ID = "2106047373926555650"            # 创建者账号里发布的 AI 应用；别的账号需要自己发布，见 references/runninghub-notes.md
+DEFAULT_APP_ID = "2106047373926555650"            # 已内置的 AI 应用（创建者发布）：别的账号的 Key 可直接调用，用户只需提供 Key，不需要自己的应用 ID
 NODE_AUDIO, NODE_IMG, NODE_PROMPT = "348", "114", "9008"          # 图片只传一次，应用内部自己分发
 NODE_WIDTH, NODE_HEIGHT = "139", "140"
 DEFAULT_INSTANCE = "plus"                         # 48G；用户授权过。ultra(84G) 未授权，不自行使用

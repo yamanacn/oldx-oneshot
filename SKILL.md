@@ -53,6 +53,8 @@ python scripts/voice/check_key.py
 python scripts/avatar/check_setup.py
 ```
 
+RunningHub 只要 Key：生成人物视频用的云端应用已经内置，**不要向用户要应用 ID**。
+
 缺哪个就按对应阶段说明里的原话向用户要，用户**只需要把密钥粘贴到对话框**，保存和后续操作都由你来做。
 
 ## 缺什么自动装什么
