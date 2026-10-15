@@ -1,16 +1,19 @@
-"""检查拆段是否合格：不增不减原文、每段不超过上限，并提示拆得太碎或没必要拆。
+"""检查拆段是否合格：不增不减原文、每段不超过上限、只断在句末、没有拆得过碎。
 
   python split_check.py --copy 配音/copy.txt --paragraphs 配音/paragraphs.json
 
 paragraphs.json 格式：{"paragraphs": ["第一大段……", "第二大段……"]}
-拆段本身由 Claude 通读全文后按话题转折来做；本脚本只负责把关，不自动切。
-退出码：0 合格；1 不合格（文字对不上或超长）。
+拆段用 split_text.py 按规则自动做；本脚本把关（手工拆的也照样查）。
+不合格（退出码 1）的情况：文字对不上、某段超长、某段不是在整句结束处断开、全文不超过上限却拆成了多段、有不到 60 字的短段。
+后两条在用户明确要求按他的分段配时（paragraphs.json 里 user_split 为 true，或加 --user-split）放行。
 """
 import argparse
 import json
 import os
 import re
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import _cli  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common as C
@@ -24,9 +27,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--copy", required=True)
     ap.add_argument("--paragraphs", required=True)
+    ap.add_argument("--user-split", action="store_true", help="用户明确要求按他的分段配")
     a = ap.parse_args()
     orig = squash(open(a.copy, encoding="utf-8").read())
-    paras = json.load(open(a.paragraphs, encoding="utf-8"))["paragraphs"]
+    pj = json.load(open(a.paragraphs, encoding="utf-8"))
+    paras = pj["paragraphs"]
+    user_split = a.user_split or bool(pj.get("user_split"))
     joined = squash("".join(paras))
     ok = True
     if joined != orig:
@@ -42,15 +48,26 @@ def main():
             ok = False
             flag = "  ✗ 超过 %d 字上限" % C.MAX_CHARS
         print("段%d：%d 字%s" % (i, n, flag))
+    mid = [i for i, p in enumerate(paras[:-1], 1) if not re.search(r"[。！？!?…][”」』）)\"']*\s*$", p)]
+    if mid:
+        ok = False
+        print("✗ 段%s 不是在整句结束处断开的（结尾不是。！？）：不要在句子中间断开" % "、".join(map(str, mid)))
     total = len(joined)
-    if len(paras) > 1 and total <= C.MAX_CHARS:
-        print("提示：全文只有 %d 字，不超过 %d 字，可以整段一次合成，不必拆。" % (total, C.MAX_CHARS))
     small = [i for i, p in enumerate(paras, 1) if len(squash(p)) < 60 and len(paras) > 1]
-    if small:
-        print("提示：段%s 很短（<60 字），拆得可能偏碎，考虑并入相邻段。" % "、".join(map(str, small)))
+    if not user_split:
+        if len(paras) > 1 and total <= C.MAX_CHARS:
+            ok = False
+            print("✗ 全文只有 %d 字，不超过 %d 字，应该整篇一段合成（拆开后段与段之间的停顿又长又机械）" % (total, C.MAX_CHARS))
+        elif small:
+            ok = False
+            print("✗ 段%s 很短（<60 字），拆得过碎" % "、".join(map(str, small)))
     print("合格" if ok else "不合格")
-    sys.exit(0 if ok else 1)
+    wd = os.path.dirname(os.path.abspath(a.paragraphs))
+    _cli.report(passed=ok, segments=[len(squash(p)) for p in paras], max_chars=C.MAX_CHARS, user_split=user_split)
+    if not ok:
+        _cli.report(next="python scripts/voice/split_text.py --workdir %s --force（按规则重新拆，不要手工拆）" % wd)
+    sys.exit(_cli.OK if ok else _cli.ERROR)
 
 
 if __name__ == "__main__":
-    main()
+    _cli.run(main)

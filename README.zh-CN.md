@@ -20,7 +20,7 @@
 git clone https://github.com/yamanacn/oldx-oneshot.git ~/.claude/skills/oldx-oneshot
 ```
 
-然后在 Claude Code 里说“用 oldx-oneshot 帮我把这段文案做成口播视频”，并给它文案、5–10 秒的人声样本和一张口播图片。
+然后在 Claude Code 里说“用 oldx-oneshot 帮我把这段文案做成口播视频”，并给它文案、10–20 秒的人声样本和一张口播图片。
 
 ## 需要的密钥
 

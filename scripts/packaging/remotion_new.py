@@ -89,6 +89,12 @@ def main():
         wd = Path(a.workdir)
         proj = wd / "package"
         presenter, voice, words = wd / "avatar" / "final_avatar.mp4", wd / "out" / "merged.wav", wd / "out" / "words.json"
+        # oldx-avatar 拼接时会裁掉每段开头几帧（连同同样长的开头静音），成片比 merged.wav 短；
+        # 它另存了和成片对齐的配音和逐词时间，有就用它们，不然声音和字幕会越往后越错位
+        if (wd / "avatar" / "voice_final.wav").is_file():
+            voice = wd / "avatar" / "voice_final.wav"
+        if (wd / "avatar" / "words_final.json").is_file():
+            words = wd / "avatar" / "words_final.json"
         copy = wd / "copy.txt"
     elif a.project:
         proj, copy = Path(a.project), Path(a.copy) if a.copy else None

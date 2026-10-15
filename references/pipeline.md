@@ -10,7 +10,7 @@
 workdir/
 ├── copy.txt, meta.json          文案原文（一个字不改）和它的哈希、字数
 ├── voice.json, paragraphs.json  用的哪个音色；配音的拆段
-├── emotions.json                情绪标签规则和整体描述（要用标签时才有，格式见 references/voice/emotions.example.json）
+├── emotions.json                语气描述和情绪标签规则（格式见 references/voice/emotions.example.json）
 ├── cache/                       各段配音的缓存
 ├── out/
 │   ├── merged.wav               ★ 整条配音
@@ -20,9 +20,12 @@ workdir/
 ├── avatar/
 │   ├── image.png                处理过的口播图片
 │   ├── plan.json, prompt_src.json, prompts/   分段和提示词
-│   ├── clips/, result.json      各段原始视频、任务号和费用
-│   ├── final_avatar.mp4         ★ 人物视频（声音就是 merged.wav）
-│   └── qa.json, anomalies.json  ★ 质检结果和需要遮盖的异常时间段
+│   ├── clips/, result.json      各段原始视频、任务号、种子、工作流版本和费用
+│   ├── takes/seg_NN/            各段的历史版本：重跑前自动收进来，带种子、工作流版本、提示词（takes.py 列出、换回）
+│   ├── final_avatar.mp4         ★ 人物视频（拼接时从第 2 段起每段开头裁掉 4 帧，所以比 merged.wav 略短）
+│   ├── finalize.json, words_final.json, voice_final.wav   各段在成片上的起止；换算到成片上的逐词时间；和成片对齐的配音（包装用这两份）
+│   ├── sheets/, seams.png       全片总览图（每 0.5 秒一格）和接缝图
+│   └── qa.json, qc_frames.json, anomalies.json  ★ 质检结果（嘴、手、色彩；镜头、接缝）和需要遮盖的异常时间段
 ├── package/                     包装工程（Remotion）
 │   ├── STYLE.md                 这条片子的风格说明
 │   ├── src/Film.tsx             画面编排
@@ -30,7 +33,7 @@ workdir/
 └── final/                       ★ 交付给用户的成片（质检通过后从 package/out 复制过来，起一个看得懂的文件名）
 ```
 
-根目录 `~/.digital-human/` 下还有：`latest.json`（最近一个项目）、`voice.json`（用户的默认音色，新项目不给样本就沿用）、`voice_history.json`（复刻过的所有音色，可用 `clone_voice.py --list`、`--use` 换回）、`remotion-runtime/`（包装用的依赖，所有项目共用一份）。两个密钥分别在 `~/.bailian/api_key` 和 RunningHub 自己的配置里，由各阶段的检查脚本去找。
+根目录 `~/.digital-human/` 下还有：`latest.json`（最近一个项目）、`voice.json`（用户的默认音色，新项目不给样本就沿用）、`voice_history.json`（复刻过的所有音色，可用 `clone_voice.py --list`、`--use` 换回）、`remotion-runtime/`（包装用的依赖，所有项目共用一份）。两个密钥分别在 `~/.bailian/api_key` 和 `~/.runninghub/api_key`，由各阶段的检查脚本去找。这个目录和 oldx-avatar 技能是同一个：两边的密钥、音色、项目互相通用。
 
 ## 交接物
 
@@ -39,7 +42,8 @@ workdir/
 | 配音 | 数字人 | `out/merged.wav` | 分段后逐段送去驱动人物；成片的声音也用它 |
 | 配音 | 数字人 | `out/words.json` 的 `pauses` | 只能在停顿处切段 |
 | 配音 | 数字人 | `out/words.json` 的 `words` | 动作编排按词对时间 |
-| 配音 | 包装 | `out/words.json`、`copy.txt` | 画面元素跟着词出现；字幕按原文纠正识别错字 |
+| 配音 | 数字人 | `emotions.json` | 每一处的语气，是选动作的线索 |
+| 数字人 | 包装 | `avatar/words_final.json`、`avatar/voice_final.wav`、`copy.txt` | 和人物视频对齐的逐词时间和配音：画面元素跟着词出现，字幕按原文纠正识别错字。**不要用 `out/words.json`**——拼接裁过每段开头，越往后差得越多（旧项目没有这两份时才用 `out/` 里的）。`remotion_new.py --workdir` 会自动选 |
 | 数字人 | 包装 | `avatar/final_avatar.mp4` | 人物层 |
 | 数字人 | 包装 | `avatar/anomalies.json` | 这几秒画面有异常（变色、嘴不动），包装时把人物缩小或移开、用内容盖过去，不必花钱重新生成 |
 | 数字人 | 包装 | `avatar/image.png` | 现成的真实素材（“就这一张照片”） |
@@ -60,8 +64,11 @@ python scripts/status.py --list     # 所有项目
 | 改了什么 | 后面要重做什么 |
 |---|---|
 | 文案 | 全部（这是一个新项目，目录也会是新的） |
-| 音色、配音 | 数字人（嘴型和时长都变了）、包装（逐词时间变了，重新放素材，画面编排里用 `T("…")` 取的时间会自动跟着变，但要重看一遍静帧） |
-| 口播图片、某几段人物视频 | 包装只需重新放素材、重渲；编排不用改 |
+| 音色、语气、配音 | 数字人全部重做（嘴型和时长都变了，要重新花钱）、包装（逐词时间变了，重新放素材，画面编排里用 `T("…")` 取的时间会自动跟着变，但要重看一遍静帧） |
+| 口播图片 | 数字人从处理图片开始重做；配音不用动；包装重新放素材、重渲 |
+| 某几段的动作编排 | 只用 `--only <段号>` 重跑那几段，再拼接、质检；包装重新放素材、重渲 |
+| 想换回某段以前的版本 | `takes.py --use 段号=版本号`，不用重新生成；再拼接、质检，包装重新放素材 |
+| 云端工作流改过 | 先 `check_setup.py --set-workflow` 记一个版本标签；已生成的段不一定要重跑，但混用不同工作流版本的片段时留意前后是否一致 |
 | 风格、版式、画面内容 | 只重做包装 |
 
 ## 用户从中间进来
@@ -69,6 +76,6 @@ python scripts/status.py --list     # 所有项目
 | 用户手里有什么 | 从哪开始 |
 |---|---|
 | 只有文案 | 第一阶段 |
-| 文案加自己录好的配音 | 没有逐词时间就没法切段和对画面：先建项目（`scripts/voice/project.py init`），把音频放到 `out/merged.wav`，按 `references/voice/guide.md` 第 5 步做逐词对齐，再进第二阶段 |
+| 文案加自己录好的配音（真人录音、别处合成的都算） | 没有逐词时间就没法切段和对画面：先建项目（`scripts/voice/project.py init`），把音频转成 wav 放到 `out/merged.wav`，按 `references/voice/guide.md` 第 5 步做逐词对齐，再进第二阶段 |
 | 自己拍的口播视频（真人出镜），只想做包装 | 直接第三阶段：用 `remotion_new.py --project` 指定工程目录、人物视频、原声和逐词时间；逐词时间用第一阶段的识别脚本从原声得到 |
 | 已有项目，想换个风格再做一版 | 第三阶段。把原来的 `package/` 改个名字留着，再起一个新的；从设计说明重新开始，不能只换颜色和边框 |

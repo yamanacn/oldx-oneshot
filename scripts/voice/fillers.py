@@ -8,10 +8,8 @@
 识别给的词边界有 0.1–0.2 秒的误差，所以只用它定位"大概在哪"，起止点都落在音频能量的静音处或谷底。
 """
 import difflib
-import hashlib
 import json
 import os
-import re
 
 import numpy as np
 

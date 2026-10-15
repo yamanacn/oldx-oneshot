@@ -15,6 +15,8 @@ import re
 import subprocess
 import sys
 import wave
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import _cli  # noqa: E402
 
 import numpy as np
 
@@ -70,12 +72,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--out", default="out", help="结果文件夹名（--variant 出的版本用 out_<名字>）")
+    ap.add_argument("--yes", action="store_true", help="没有 words.json 时允许先自动做逐词对齐（联网，会产生少量费用）")
     a = ap.parse_args()
     out = os.path.join(a.workdir, a.out)
     wj = os.path.join(out, "words.json")
     if not os.path.isfile(wj):
+        if not a.yes:
+            _cli.fail(_cli.ERROR, "没有 %s：先运行 align_words.py --yes（或给本脚本加 --yes，自动先做逐词对齐）" % wj)
         print("没有 words.json，先做逐词对齐……")
-        r = subprocess.run([sys.executable, os.path.join(HERE, "align_words.py"), "--workdir", a.workdir, "--out", a.out])
+        r = subprocess.run([sys.executable, os.path.join(HERE, "align_words.py"), "--workdir", a.workdir, "--out", a.out, "--yes"])
         if r.returncode != 0:
             sys.exit(r.returncode)
     words = json.load(open(wj, encoding="utf-8"))
@@ -130,7 +135,9 @@ def main():
         print(" -", f)
     json.dump({"rows": rows, "flags": flags}, open(os.path.join(out, "verify.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
+    _cli.report(verify_json=os.path.join(out, "verify.json"), issues=flags,
+                segments=[{k: r[k] for k in ("i", "seconds", "chars_per_sec", "f0", "match")} for r in rows])
 
 
 if __name__ == "__main__":
-    main()
+    _cli.run(main)

@@ -2,25 +2,24 @@
 
   python build_prompts.py --workdir <项目目录>
 
-输入：<workdir>/avatar/prompt_src.json（由 Claude 按 references/prompt-rules.md 写）：
-  {"scene": "画面描述（看图写：人物的发型、衣着、佩戴物；位置和姿态；背景左右两侧有什么）",
-   "hands": "双手的原姿态（分别写「画面左侧的手」「画面右侧的手」的位置、掌心朝向、手指状态）",
-   "lines": ["第1段的台词原文", "第2段的台词原文"],
-   "motions": ["第1段的动作编排（若干行，每行一个节拍）", "第2段的……"]}
+输入：<workdir>/avatar/prompt_src.json（照 references/avatar/prompt_src.example.json 写，规则见 references/avatar/prompt-rules.md）：
+  {"image_type": "图片类型 + 附加条件，例如 B+持物右+非中性（类型 A 近景 / B 半身无桌面 / C 半身有桌面 / D 站姿 / E 全身远景；
+                  附加条件：持物左、持物右 = 画面哪一侧的手拿着东西，旁物 = 东西摆在旁边，非中性 = 图里嘴张开或手抬在半空）",
+   "hands": "双手的原姿态", "posture": "身体的原姿态（可不写）",
+   "lines": ["第1段的台词原文", ...],                 # 只用来核对分段，不放进提示词
+   "motions": ["第1段的动作：一整段中文，从 <Picture 1> 的姿态写起，最后回到 <Picture 1> 的姿态", ...]}
 同目录的 plan.json 提供每段时长和识别文字。
-输出：<workdir>/avatar/prompts/segment_NN.txt = 画面描述 + 双手的原姿态 + 本段台词 + 动作编排。
-镜头、视线、画面稳定等通用要求由云端应用自动加入，这里不写、也不需要写。
+输出：<workdir>/avatar/prompts/segment_NN.txt = 第一行 <固定镜头，无运镜> + 双手（和身体）的原姿态 + 动作。
+
+写法只有一种：中文连续叙述。以前的“节拍列表”和“英文连续叙述”两种写法已经删掉（2026-10-14）：节拍里的关键词和时间段
+是烧字幕、镜头拉远的嫌疑，英文和中文效果一样。旧项目的 prompt_src.json 是这两种写法时会报错，按 prompt-rules.md 改写成中文叙述。
 
 校验（不通过就退出码 1，并说明哪一段哪一条）：
-  * 每个节拍格式：`起–止「关键词」：动作描述`，时间是本段内的秒数，递增、不重叠、不超过本段时长；
-  * 关键词必须出现在本段台词里；台词与识别文字相似度 ≥0.9；
-  * 两只手的写法（每个节拍写两只手、副手有自己的动作、两只手轮流当主角、有起有落、不重复）只给提示，不拦截——
-    云端模型不会逐字照做，没必要卡死；
-  * **不写任何与嘴部有关的描述**：嘴、唇、口型、微笑/笑意、换气、表情、神态、露出、情绪形容词等一律禁止
-    （画面描述、双手描述、动作编排都检查；台词原文不检查）；
-  * 第一个节拍必须是保持原姿态、最后一个节拍必须回到原姿态附近，并写明手仍保持轻微自然晃动；
-  * 动作描述里不能出现具体手指数、镜头运动、触碰脸或佩戴物、视线离开镜头；
-  * hands 里必须分别描述"画面左侧的手"和"画面右侧的手"；每段不超过 2000 字。
+  * 必须先填 image_type；hands 里要写两只手（或统一写“双手”；近景 A 不要求）；
+  * 动作是一整段中文：不夹英文、不写时间点和秒数、不用引号、不写嘴和表情、不用比喻、不写镜头运动或前后方向的动作、
+    不写具体手指数、不碰脸；开头和结尾各提一次 <Picture 1>；
+  * 台词与本段识别文字相似度 ≥0.9（核对分段用）；每段不超过 2000 字。
+  * 双手交叉、往中间靠拢、举过肩，叙述偏长偏短：只给提示。
 """
 import argparse
 import difflib
@@ -28,28 +27,77 @@ import json
 import os
 import re
 import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import _cli  # noqa: E402
 
 BEAT = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*[–—\-~～]\s*(\d+(?:\.\d+)?)\s*(?:「([^」]*)」)?\s*[：:]?\s*(.+?)\s*$")
-ORIGIN = re.compile(r"原位|原姿态|原图姿态|原有姿态|原来的姿态")
-NATURAL_MOTION = re.compile(r"晃动|摆动")
 FORBID = [
-    (r"[一二三四五六七八九十两\d]\s*根\s*手指|[一二三四五六七八九十两\d]\s*指", "具体手指数（数字手势多次出错，改用手掌或食指示意）"),
+    # 只拦“比数字”的写法；“五指张开”“手指并拢”是在描述手形，不拦
+    (r"[一二三四五六七八九十两\d]\s*根\s*(?:手)?指|(?:伸出|比出|竖起|举起|伸|比)\s*[一二三四五六七八九十两\d]\s*(?:个)?\s*(?:手)?指|比\s*(?:个|出)\s*[一二三四五六七八九十\d]",
+     "具体手指数（数字手势多次出错，改用手掌或食指示意）"),
     (r"推近|拉远|变焦|摇镜|运镜|跟拍|转身|站起|起身|走动|凑近|靠近镜头|特写|放大画面|缩小画面", "镜头运动或大幅位移（推近拉远一律留给后期做）"),
     (r"前倾|后仰|后靠|向后.{0,4}靠|往后.{0,4}靠|探身|探出|身体向前|上身向前|伸向镜头|向镜头", "身体或手朝镜头前后移动：模型会把它做成推近拉远，画面和背景跟着出错；身体只写耸肩、侧倾、左右轻晃"),
     (r"摸|触碰|扶正|摘下|整理|挠|揉|托腮", "触碰脸部或佩戴物"),
     (r"像|仿佛|好似|如同|似的", "比喻（“像拿着话筒”“像捧起东西”）：模型会把比喻里的东西画出来，直接写手怎么动"),
     (r"看向手|低头看|看着手|目光.{0,4}(移开|离开|下移|转向)|视线.{0,4}(移开|离开|下移|转向)|看向别处|看向画面外", "视线离开镜头"),
 ]
-# 下面这些只给提示、不拦截：云端模型不会逐字照做，写法上的要求没必要卡死，提醒到了由写的人自己判断
-HOVER = re.compile(r"停在原位|保持不动|一动不动|固定不动|悬停|纹丝|僵")
-# 看得见位移的动作（主手、副手都该有一个）；只有晃动、摆动、一张一合这类词算“弱动作”
-STRONG = re.compile(r"推|压|托|展开|摊|递|指|拍|敲|点|握|举|抬|落|放下|放到|放在|垂|搭|撑|按|叉|甩|挥|比|划|画|合|收|转|错动|振|伸")
-REST = re.compile(r"落到|落在|落回|放下|放到|放在|垂到|垂下|搭在|撑在|叉在|收到")
-BODY = re.compile(r"上身|肩|身体|重心|侧倾|挺")
 # 与嘴部、表情有关的词一律不写（画面描述、双手描述、动作编排都检查；台词原文不检查）
 MOUTH = re.compile(r"嘴|唇|口型|牙|笑|抿|咧|撇|开口|张口|闭合|换气|表情|神态|露出|亲切|惊喜|遗憾|无奈|皱眉|开心|高兴|愉快|满意|自信|明亮|热情")
 LEFT, RIGHT = "画面左侧的手", "画面右侧的手"
 MAX_CHARS = 2000
+SHOTS = {"A": "近景", "B": "半身无桌面", "C": "半身有桌面", "D": "站姿", "E": "全身远景"}
+FLAGS = {"持物左", "持物右", "旁物", "非中性"}
+
+
+# 连续中文叙述（motion_style = narrative_zh）：动作是一整段中文，从首帧状态讲到回到首帧状态
+ZH_HINT = [
+    (r"交叉|叠在|叠放|重叠|十指相扣|合十|靠拢|向中间|往中间|收拢", "双手交叉、叠放或往中间靠拢：这类动作多次引出多手"),
+    (r"举过头|高举|举高|抬高|过头顶|超过下巴", "手抬得过高：多次引出多手，写到肩膀高度为止"),
+]
+
+
+def check_narrative_zh(tag, dur, text):
+    """返回 (problems, hints)。固定镜头那一行由 prompt_prefix 加，叙述里不写。"""
+    probs, hints = [], []
+    body = text.replace("<Picture 1>", "")
+    if re.search(r"[A-Za-z]", body):
+        probs.append("%s：叙述整段用中文写，出现了英文字母（%s）" % (tag, re.search(r"[A-Za-z]+", body).group()))
+    if re.search(r"[\"“”「」『』]", text):
+        probs.append("%s：叙述里不用引号：引号里的字可能被当成画面上的文字画出来" % tag)
+    m = re.search(r"\d+(\.\d+)?\s*(秒|s\b)|\d+\.\d+\s*[–—\-~]|\b\d{1,2}:\d{2}\b", text)
+    if m:
+        probs.append("%s：叙述里不写时间点和秒数，只按先后顺序写（%s）" % (tag, m.group()))
+    m = MOUTH.search(text)
+    if m:
+        probs.append("%s：叙述里出现与嘴部或表情有关的词「%s」，一律不写" % (tag, m.group()))
+    for pat, why in FORBID:
+        mm = re.search(pat, text)
+        if mm:
+            probs.append("%s：叙述里出现%s（%s）" % (tag, why, mm.group()))
+    if text.count("<Picture 1>") < 2 or "<Picture 1>" not in text[:40] or "<Picture 1>" not in text[-30:]:
+        probs.append("%s：叙述要从 <Picture 1> 的姿态写起，最后一句写明回到 <Picture 1> 的姿态（开头和结尾各提一次）" % tag)
+    for pat, why in ZH_HINT:
+        mm = re.search(pat, text)
+        if mm:
+            hints.append("%s：%s（%s）" % (tag, why, mm.group()))
+    n = len(re.sub(r"[\s，。；：、！？<>]|<Picture 1>", "", text))
+    if n / max(dur, 0.1) > 16:
+        hints.append("%s：叙述偏长（%d 字，%.1f 秒），动作可能挤在一起" % (tag, n, dur))
+    if n / max(dur, 0.1) < 6:
+        hints.append("%s：叙述偏短（%d 字，%.1f 秒），后半段可能没有动作" % (tag, n, dur))
+    return probs, hints
+
+
+def parse_image_type(v):
+    """'B+持物右+非中性' -> ('B', {'持物右', '非中性'})；写错了返回 (None, 说明)"""
+    parts = [x.strip() for x in re.split(r"[+＋,，、\s]+", str(v or "")) if x.strip()]
+    if not parts or parts[0].upper() not in SHOTS:
+        return None, "image_type：先判断图片类型再写动作。写成「类型+附加条件」，例如 B+持物右+非中性。类型：%s；附加条件：%s" % (
+            "、".join("%s %s" % kv for kv in SHOTS.items()), "、".join(sorted(FLAGS)))
+    bad = [x for x in parts[1:] if x not in FLAGS]
+    if bad:
+        return None, "image_type：不认识的附加条件 %s，只能用 %s" % ("、".join(bad), "、".join(sorted(FLAGS)))
+    return parts[0].upper(), set(parts[1:])
 
 
 _CN = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
@@ -75,44 +123,23 @@ def norm(s):
     return re.sub(r"[\s，。、！？!?；;：:“”\"'（）()\-—…,.]", "", s).lower()
 
 
-def richness_hints(tag, dur, beats):
-    """手的动作够不够丰富：只给提示。看中间的节拍（首尾是回到原姿态，不算）"""
-    mid = beats[1:-1]
-    out = []
-    if len(mid) < 2:
-        return out
-    weak = {LEFT: 0, RIGHT: 0}
-    seen = {LEFT: 0, RIGHT: 0}
-    lead = {LEFT: 0, RIGHT: 0}
-    for _, _, desc, both in mid:
-        if not both:
-            continue
-        i, j = desc.index(LEFT), desc.index(RIGHT)
-        if abs(i - j) > len(LEFT) + 1:                      # 「左侧的手和右侧的手一起……」不算谁领头
-            lead[LEFT if i < j else RIGHT] += 1
-        for hand, a, b in ((LEFT, i, j), (RIGHT, j, i)):
-            clause = desc[a + len(hand):b] if b > a else desc[a + len(hand):]
-            if abs(i - j) <= len(LEFT) + 1:                 # 两只手连着写，共用后面那一句
-                clause = desc[max(i, j) + len(hand):]
-            seen[hand] += 1
-            if not STRONG.search(clause):
-                weak[hand] += 1
-    for hand in (LEFT, RIGHT):
-        if seen[hand] >= 3 and weak[hand] / seen[hand] > 0.6:
-            out.append("%s：%s在多数节拍里只有晃动、摆动这类弱动作，成片里它多半不动。给它一件自己的事：落到某处、托着、叉腰、收到身前、在落点上轻点" % (tag, hand))
-    n = lead[LEFT] + lead[RIGHT]
-    if n >= 4 and min(lead.values()) / n < 0.25:
-        idle = LEFT if lead[LEFT] < lead[RIGHT] else RIGHT
-        out.append("%s：主要手势几乎都是另一只手在做，让%s也当几次主角" % (tag, idle))
-    if dur >= 8 and not any(REST.search(d) for _, _, d, _ in mid):
-        out.append("%s：这一段里手一直举着，没有落下再抬起。内容不是特别密的话，在停顿或平静的句子里让手落到某处歇一拍" % tag)
-    if dur >= 6 and not any(BODY.search(d) for _, _, d, _ in mid):
-        out.append("%s：这一段只写了手，没写身体。每两三个节拍带一次肩膀或上身的小动作（微微前倾、耸肩、略转向一侧、重心慢慢移），人才不像钉在原地" % tag)
-    for (_, _, d1, _), (_, _, d2, _) in zip(mid, mid[1:]):
-        if d1 == d2:
-            out.append("%s：相邻两个节拍是同一个手势，换一个：%s" % (tag, d1[:24]))
-            break
-    return out
+DEFAULT_PREFIX = "<固定镜头，无运镜>"
+
+
+def apply_defaults(src):
+    """补上没写的开关：第一行固定镜头标签、不放画面描述、不放台词。旧写法（节拍列表、英文叙述）直接报错，说明怎么改。"""
+    style = src.get("motion_style") or "narrative_zh"
+    mot = [str(m).strip() for m in src.get("motions", []) if str(m).strip()]
+    if style != "narrative_zh" or (mot and all(BEAT.match(m.splitlines()[0]) for m in mot)):
+        _cli.report(next="按 references/avatar/prompt-rules.md 第四节，把 motions 改写成中文连续叙述，再运行 build_prompts.py")
+        _cli.fail(_cli.ERROR, "prompt_src.json 用的是旧写法（%s），已经不支持。把每段的 motions 改写成一整段中文叙述："
+                  "从 <Picture 1> 的姿态写起，按先后顺序写手、头、身体怎么动，最后回到 <Picture 1> 的姿态；不写时间、不写关键词。"
+                  % ("英文叙述" if style == "narrative" else "节拍列表"))
+    src["motion_style"] = "narrative_zh"
+    src.setdefault("prompt_prefix", DEFAULT_PREFIX)
+    src.setdefault("include_scene", False)
+    src.setdefault("include_line", False)
+    return src
 
 
 def main():
@@ -122,16 +149,22 @@ def main():
     od = os.path.join(a.workdir, "avatar")
     plan = json.load(open(os.path.join(od, "plan.json"), encoding="utf-8"))
     src = json.load(open(os.path.join(od, "prompt_src.json"), encoding="utf-8"))
+    apply_defaults(src)
     segs = plan["segments"]
     problems, hints = [], []
     scene, hands = src.get("scene", "").strip(), src.get("hands", "").strip()
     posture = src.get("posture", "").strip()
+    shot, flags = parse_image_type(src.get("image_type"))
+    if shot is None:
+        if "head" not in src:                                 # 旧格式另有专门的报错
+            problems.append(flags)
+        shot, flags = "C", set()
     if "head" in src and not scene:
-        sys.exit("prompt_src.json 是旧格式（head）。现在改为 scene（画面描述）和 hands（双手的原姿态）两项，见 references/prompt-rules.md")
-    if not scene:
+        sys.exit("prompt_src.json 是旧格式（head）。现在改为 scene（画面描述）和 hands（双手的原姿态）两项，见 references/avatar/prompt-rules.md")
+    if not scene and src.get("include_scene", True):
         problems.append("scene：缺少画面描述（人物的发型、衣着、佩戴物，位置和姿态，背景左右两侧）")
-    if not (LEFT in hands and RIGHT in hands):
-        problems.append("hands：要分别描述「%s」和「%s」在图中的位置和姿态" % (LEFT, RIGHT))
+    if shot != "A" and not ((LEFT in hands and RIGHT in hands) or "双手" in hands):
+        problems.append("hands：要分别描述「%s」和「%s」在图中的位置和姿态（两只手姿态相同时可以统一写成「双手……」）" % (LEFT, RIGHT))
     for name, txt in (("scene", scene), ("hands", hands), ("posture", posture)):
         m_ = MOUTH.search(txt)
         if m_:
@@ -145,75 +178,40 @@ def main():
         sim = difflib.SequenceMatcher(None, norm(line), norm(s["text_asr"])).ratio()
         if sim < 0.9:
             problems.append("%s：台词与本段识别文字相似度 %.2f（<0.9），请核对台词是不是这一段的内容" % (tag, sim))
-        beats, prev_end = [], 0.0
-        for ln in [x for x in motion.splitlines() if x.strip()]:
-            m = BEAT.match(ln)
-            if not m:
-                problems.append("%s：节拍格式不对（应为 `起–止「关键词」：描述`）：%s" % (tag, ln[:40]))
-                continue
-            t0, t1, kw, desc = float(m[1]), float(m[2]), m[3], m[4]
-            if t1 <= t0:
-                problems.append("%s：节拍结束早于开始：%s" % (tag, ln[:40]))
-            if t0 < prev_end - 0.05:
-                problems.append("%s：节拍时间重叠或不递增：%s" % (tag, ln[:40]))
-            if t1 > dur + 0.3:
-                problems.append("%s：节拍 %.2f–%.2f 超出本段时长 %.1f 秒" % (tag, t0, t1, dur))
-            if kw and norm(kw) not in norm(line):
-                problems.append("%s：关键词「%s」不在本段台词里" % (tag, kw))
-            for pat, why in FORBID:
-                if re.search(pat, desc):
-                    problems.append("%s：节拍里出现%s：%s" % (tag, why, desc[:30]))
-            mm = MOUTH.search(desc)
-            if mm:
-                problems.append("%s：节拍里出现与嘴部或表情有关的词「%s」，一律不写：%s" % (tag, mm.group(), desc[:30]))
-            both_sides = LEFT in desc and RIGHT in desc
-            if not ("双手" in desc or both_sides):
-                hints.append("%s：这个节拍没有写两只手（写「双手」，或同时写「%s」和「%s」），没写到的那只手容易僵住：%s" % (tag, LEFT, RIGHT, desc[:30]))
-            if HOVER.search(desc):
-                hints.append("%s：写了让手停在半空的说法，容易僵。想让手休息，就写它落到哪（桌面、腿上、腰侧……）：%s" % (tag, desc[:30]))
-            prev_end = max(prev_end, t1)
-            beats.append((t0, t1, desc, both_sides))
-        if not beats:
-            problems.append("%s：没有任何节拍" % tag)
-        else:
-            if not ORIGIN.search(beats[0][2]):
-                problems.append("%s：第一个节拍要写明保持原姿态" % tag)
-            if not ORIGIN.search(beats[-1][2]):
-                problems.append("%s：最后一个节拍要写明回到原姿态附近" % tag)
-            for k in (0, -1):
-                if not NATURAL_MOTION.search(beats[k][2]):
-                    hints.append("%s：第一个和最后一个节拍最好写明双手仍在轻微晃动，免得冻在原位" % tag)
-                    break
-            side_share = sum(1 for b in beats if b[3]) / len(beats)
-            if side_share < 0.5:
-                hints.append("%s：只有 %.0f%% 的节拍分别写了左右两只手，多数节拍最好写清两只手各自做什么" % (tag, side_share * 100))
-            hints.extend(richness_hints(tag, dur, beats))
-            if beats[-1][1] < dur - 1.0:
-                problems.append("%s：动作只编排到 %.1f 秒，本段 %.1f 秒，后面一截没有安排" % (tag, beats[-1][1], dur))
-            density = len(beats) / max(dur, 0.1)
-            if density > 1.3:
-                print("提示：%s 节拍偏密（%.1f 个/秒），手势可能挤在一起" % (tag, density))
-        parts = ["画面描述：%s\n双手的原姿态：%s" % (scene, hands) + ("\n身体的原姿态：%s" % posture if posture else ""),
-                 "本段台词（时长约%.1f秒）：%s" % (dur, line),
-                 "动作编排（按台词节拍，时间为本段内的秒数）：\n" + motion.strip()]
+        prefix = src.get("prompt_prefix", "").strip()           # 例如「<固定镜头，无运镜>」：放在每段提示词的第一行，由脚本加，不参与动作叙述的检查
+        text = " ".join(motion.split())                         # 中文连续叙述：不分节拍、不写时间
+        pr, hi = check_narrative_zh(tag, dur, text)
+        problems.extend(pr)
+        hints.extend(hi)
+        head = (["画面描述：%s" % scene] if src.get("include_scene", True) else []) + ["双手的原姿态：%s" % hands] + (["身体的原姿态：%s" % posture] if posture else [])
+        parts = ([prefix] if prefix else []) + ["\n".join(head)]
+        if src.get("include_line", True):
+            parts.append("本段台词（时长约%.1f秒）：%s" % (dur, line))
+        parts.append("动作：" + text)
         full = "\n\n".join(parts)
         if len(full) > MAX_CHARS:
             problems.append("%s：提示词 %d 字，超过 %d 字" % (tag, len(full), MAX_CHARS))
         outs.append((s["i"], full))
+    print("图片类型：%s %s%s" % (shot, SHOTS[shot], "，附加条件：" + "、".join(sorted(flags)) if flags else ""))
+    print("写法：中文连续叙述；第一行：%s；画面描述：%s；台词：%s" % (src.get("prompt_prefix") or "无", "放" if src.get("include_scene", True) else "不放", "放" if src.get("include_line", True) else "不放"))
     for h in hints:
         print("提示：" + h)
     if problems:
         print("校验未通过：")
         for p in problems:
             print(" ✗", p)
-        sys.exit(1)
+        _cli.report(passed=False, problems=problems, hints=hints, style=src["motion_style"])
+        sys.exit(_cli.ERROR)
     pd = os.path.join(od, "prompts")
     os.makedirs(pd, exist_ok=True)
     for i, full in outs:
         open(os.path.join(pd, "segment_%02d.txt" % i), "w", encoding="utf-8").write(full)
         print("segment_%02d.txt  %d 字" % (i, len(full)))
     print("校验通过，提示词已写入", pd)
+    _cli.report(passed=True, prompts_dir=pd, segments=len(outs), hints=hints, style=src["motion_style"],
+                image_type=shot + ("+" + "+".join(sorted(flags)) if flags else ""),
+                prompt_prefix=src.get("prompt_prefix") or "", include_scene=src.get("include_scene", True), include_line=src.get("include_line", True))
 
 
 if __name__ == "__main__":
-    main()
+    _cli.run(main)

@@ -20,7 +20,7 @@ This is a Claude Code skill. Clone it into your skills directory:
 git clone https://github.com/yamanacn/oldx-oneshot.git ~/.claude/skills/oldx-oneshot
 ```
 
-Then tell Claude Code something like "use oldx-oneshot to turn this script into a talking-head video", and give it the script, a 5-10 second voice sample, and a portrait photo.
+Then tell Claude Code something like "use oldx-oneshot to turn this script into a talking-head video", and give it the script, a 10-20 second voice sample, and a portrait photo.
 
 ## API keys
 

@@ -10,7 +10,8 @@
      任一只手 >60% 标出。
   3. 色彩：取画面左右边缘的背景条带，按段算平均 Lab 色，与各段中位色的距离 >25 标出。
   4. 逐秒色彩：同一条带每秒的平均色与输入图片比，色相偏转 >20° 或彩度 <55% 的连续区间记为异常时间段。
-输出 avatar/anomalies.json（嘴不动和逐秒色彩的异常时间段），供包装环节遮盖用。
+  5. 画面（qc_frames.py，结束时自动调用）：每段镜头有没有被推近／拉远、接缝跳不跳，并生成每 0.5 秒一格的全片总览图。
+输出 avatar/anomalies.json（嘴不动、逐秒色彩、镜头推拉的异常时间段），供改提示词重跑时定位，也可以交给后期遮盖。
 手和色彩的阈值按用户看片后的意见放宽过（2026-10-03）：单段手静止 56%、段间色差约 19 的成片用户认为可以接受；
 整段明显变成另一种色调（实测色差 54–72）仍会被标出。嘴的阈值没有放宽。阈值都是经验值，只在这类构图（人物居中、双手在身体两侧）上验证过；换构图后先人工看一遍再信。
 """
@@ -19,9 +20,15 @@ import json
 import os
 import sys
 import wave
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import _cli  # noqa: E402
 
 import cv2
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common as C  # noqa: E402
+import _util  # noqa: E402
 
 STATIC_THR = 0.8
 MOUTH_RATIO = 0.45
@@ -32,13 +39,7 @@ CHROMA_MIN = 0.55          # 逐秒：背景彩度降到图片的多少倍以下
 
 
 
-def _imwrite(path, img):
-    """cv2.imwrite 在带中文的路径上会悄悄失败（不报错、也不写文件），改成先编码再用 numpy 写出"""
-    ok, buf = cv2.imencode(os.path.splitext(str(path))[1] or ".png", img)
-    if not ok:
-        raise RuntimeError("图片编码失败：%s" % path)
-    buf.tofile(str(path))
-    return True
+from _util import imwrite as _imwrite  # noqa: E402
 
 def color_anomalies(colors, ref_ab, fps):
     """逐秒比较背景色与输入图片：色相偏转或褪色的连续区间，返回 [(起, 止, 说明)]。
@@ -96,7 +97,7 @@ def main():
     od = os.path.join(a.workdir, "avatar")
     video = a.video or os.path.join(od, "final_avatar.mp4")
     plan = json.load(open(os.path.join(od, "plan.json"), encoding="utf-8"))
-    segs = plan["segments"]
+    segs = C.final_segments(od, plan)                     # 成片时间轴上的起止（拼接时裁过开头）
     cap = cv2.VideoCapture(video)
     fps, W, H = cap.get(cv2.CAP_PROP_FPS), int(cap.get(3)), int(cap.get(4))
     info_p = os.path.join(od, "image_info.json")
@@ -140,10 +141,14 @@ def main():
     mot = {k: np.array(v) for k, v in mot.items()}
     colors = np.array(colors)
     n = len(mot["嘴"])
-    w = wave.open(os.path.join(a.workdir, "out", "merged.wav"))
+    wav = os.path.join(od, "_qa_audio.wav")                # 用成片自己的声音判断哪一秒在说话（和画面同一条时间轴）
+    import subprocess
+    subprocess.run([_util.ffmpeg_exe(), "-y", "-v", "error", "-i", video, "-vn", "-ac", "1", "-c:a", "pcm_s16le", wav], check=True)
+    w = wave.open(wav)
     sr = w.getframerate()
     audio = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
     w.close()
+    os.remove(wav)
     act = np.array([np.sqrt(np.mean(audio[int(i / fps * sr):int((i + 1) / fps * sr)] ** 2)) if int((i + 1) / fps * sr) > int(i / fps * sr) else 0 for i in range(n)])
     speak = act > 0.05 * np.percentile(act, 95)
     med_mouth = float(np.median(mot["嘴"][speak]))
@@ -203,11 +208,11 @@ def main():
     tot_l, tot_r = float((mot["左手"] < STATIC_THR).mean()), float((mot["右手"] < STATIC_THR).mean())
     print("全片：左手静止帧 %.0f%%，右手静止帧 %.0f%%" % (tot_l * 100, tot_r * 100))
     print()
-    print("需要看一下的地方：" if flags else "没有触发任何阈值（仍建议抽帧看一遍）。")
+    print("嘴、手、色彩需要看一下的地方：" if flags else "嘴、手、色彩没有触发阈值。镜头和接缝的检查见下面。")
     for f in flags:
         print(" -", f)
     if anomalies:
-        print("异常时间段已写入 %s（%d 处）。不想重跑时可以交给包装环节遮盖：人物缩到小窗或暂时隐藏，主画面放图形。"
+        print("异常时间段已写入 %s（%d 处）。按 references/avatar/guide.md 第 5 步决定是否重跑；要做后期包装的话也可以交给后期遮盖。"
               % (os.path.join(od, "anomalies.json"), len(anomalies)))
     # ---- 嘴部逐秒图：每秒一格，标出这一秒音频是否在说话（红 S = 在说话）。帧间差分会被头部晃动干扰，
     #      "说话时嘴是否闭着"最终要看这张图（用 Read 工具看）。
@@ -238,7 +243,15 @@ def main():
     json.dump({"rows": rows, "flags": flags, "mouth_region": list(reg["嘴"]), "mouth_median": med_mouth,
                "hand_static_total": [tot_l, tot_r], "mouth_low_ranges": mouth_runs},
               open(os.path.join(od, "qa.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    # ---- 画面检查：镜头推拉、接缝、全片总览图（见 qc_frames.py）
+    print()
+    import qc_frames
+    qc = qc_frames.run(a.workdir, video)
+    _cli.report(issues=flags + qc["flags"], anomalies_json=os.path.join(od, "anomalies.json"), qa_json=os.path.join(od, "qa.json"),
+                qc_json=os.path.join(od, "qc_frames.json"), mouth_strip=os.path.join(od, "mouth_strip.png"),
+                seams_image=os.path.join(od, "seams.png"), sheets=qc["sheets"],
+                must_view=[os.path.join(od, "mouth_strip.png"), os.path.join(od, "seams.png")] + qc["sheets"])
 
 
 if __name__ == "__main__":
-    main()
+    _cli.run(main)

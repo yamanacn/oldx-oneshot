@@ -24,6 +24,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _cli  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -134,8 +136,9 @@ def main():
     if a.check:
         out["missing"] = missing
     print(json.dumps(out, ensure_ascii=False, indent=1))
-    sys.exit(7 if failed else 0)
+    _cli.report(**{k: v for k, v in out.items() if k != "ok"})
+    sys.exit(_cli.DEPS if failed else _cli.OK)
 
 
 if __name__ == "__main__":
-    main()
+    _cli.run(main)

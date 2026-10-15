@@ -1,10 +1,11 @@
-"""run_avatar.py 的重试与续跑逻辑：用模拟的云端测 10 种情况（不联网、不花钱）。  python tests/test_retry.py"""
-import os, sys, json, shutil, tempfile, time, urllib.request
+"""run_avatar.py 的重试与续跑、排队、取消：用模拟的云端测（不联网、不花钱）。  python tests/avatar/test_retry.py"""
+import os, sys, tempfile, urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "avatar"))
 import common as C, run_avatar as R
 R.time.sleep = lambda s: None          # 不真等
 R.log = lambda m: LOG.append(m)
 LOG = []
+OKS = []
 
 class Cloud:
     def __init__(self, **kw):
@@ -49,6 +50,7 @@ def run(name, cloud, state=None, tries=1, timeout_min=1, expect=None):
     except Exception as e:
         err = e
     ok = expect(res, err, st, cloud) if expect else None
+    OKS.append(bool(ok))
     print(("✓" if ok else "✗"), name, "| 提交%d 下载%d 上传%d" % (cloud.submits, cloud.downloads, cloud.uploads), "|", ("成功" if res else "异常: " + str(err)[:70]))
     return st, d
 
@@ -83,7 +85,39 @@ d2 = tempfile.mkdtemp(); stH = R.State(os.path.join(d2, "result.json")); stH.set
 cH = Cloud(stale=("OLD",))
 C.upload, C.http_json = cH.upload, cH.http; urllib.request.urlretrieve = cH.retrieve
 r = R.run_one({"i": 1, "audio": "a.wav", "duration": 9}, "p", "img", 1376, 768, "k", "plus", d2, 1, 1, stH, backoff=0)
-print("✓" if (cH.submits == 1 and r["task"] == "T1") else "✗", "H 旧任务查询不到(404) → 丢弃并重新提交 | 提交%d" % cH.submits)
+OKS.append(cH.submits == 1 and r["task"] == "T1")
+print("✓" if OKS[-1] else "✗", "H 旧任务查询不到(404) → 丢弃并重新提交 | 提交%d" % cH.submits)
 # I 密钥被拒
 run("I 提交时 401 → 直接抛密钥错误", Cloud(auth_fail=True),
     expect=lambda r, e, s, c: isinstance(e, PermissionError))
+# J 并发名额被占满：耐心排队，排到了就提交成功；超过最多等待时间才报告
+busy = {"st": 200, "body": {"status": "FAILED", "errorMessage": "并发数已满"}, "_retry": True}
+run("J1 名额被占满 5 次 → 排队后提交成功", Cloud(submit_replies=[dict(busy) for _ in range(5)]),
+    expect=lambda r, e, s, c: r and c.submits == 1 and sum("排队中" in m for m in LOG) == 5)
+cJ = Cloud(submit_replies=[dict(busy) for _ in range(50)])
+C.upload, C.http_json = cJ.upload, cJ.http
+try:
+    R.submit(1, {}, "k", wait_min=0)
+    errJ = None
+except RuntimeError as e:
+    errJ = e
+OKS.append(errJ is not None and "排队等了" in str(errJ))
+print("✓" if OKS[-1] else "✗", "J2 排队超过最多等待时间 → 报告，提示稍后重跑 |", str(errJ)[:60])
+# K 取消云端任务：只取消还在跑的，取消成功的从 pending 里去掉
+d3 = tempfile.mkdtemp(); stK = R.State(os.path.join(d3, "result.json"))
+stK.set("pending", 2, {"task": "T2"}); stK.set("pending", 5, {"task": "T5"})
+calls = []
+def fake_cancel(url, payload, key, timeout=60):
+    calls.append((url, payload.get("taskId")))
+    return (200, {"code": 0, "msg": "ok"}) if payload.get("taskId") == "T2" else (200, {"code": 805, "msg": "task finished"})
+C.http_json, C.require_key = fake_cancel, (lambda: "k")
+try:
+    R.cancel_tasks(d3, stK, [2, 5])
+    codeK = 0
+except SystemExit as e:
+    codeK = e.code
+OKS.append(calls == [(R.CANCEL_URL, "T2"), (R.CANCEL_URL, "T5")] and not stK.get("pending", 2) and stK.get("pending", 5) and codeK == 8)
+print("✓" if OKS[-1] else "✗", "K 取消：成功的去掉、失败的保留并报告（退出码 8）| 调用 %d 次" % len(calls))
+
+print("\n通过 %d/%d" % (sum(OKS), len(OKS)))
+sys.exit(0 if all(OKS) else 1)

@@ -1,7 +1,7 @@
 """看一个口播项目走到哪一步了：配音、数字人、包装各缺什么，下一步该做什么。不联网，不改任何文件。
 
   python scripts/status.py                 # 最近一个项目
-  python scripts/status.py --dir <workdir>
+  python scripts/status.py --workdir <workdir>      # 旧写法 --dir 也认
   python scripts/status.py --list          # 列出所有项目
 
 输出 JSON：stage 是下一步该做的阶段（voice / avatar / packaging / done），next 是一句话的下一步。
@@ -10,11 +10,11 @@ import argparse
 import json
 import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _cli  # noqa: E402
 
 ROOT = os.environ.get("DH_WORKSPACE", "").strip() or os.path.join(os.path.expanduser("~"), ".digital-human")
 PROJECTS = os.path.join(ROOT, "projects")
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
 
 
 def has(d, *parts):
@@ -64,7 +64,7 @@ def status(d):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dir")
+    ap.add_argument("--workdir", "--dir", dest="dir", help="项目目录；不给就是最近一个项目")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
     if a.list:
@@ -76,6 +76,7 @@ def main():
                 head = open(os.path.join(d, "copy.txt"), encoding="utf-8").read(24).replace("\n", " ") if has(d, "copy.txt") else ""
                 rows.append({"id": name, "copy": head, "seconds": s["seconds"], "stage": s["stage"]})
         print(json.dumps(rows, ensure_ascii=False, indent=1))
+        _cli.report(projects=rows)
         return
     d = a.dir
     if not d:
@@ -83,8 +84,10 @@ def main():
         if not latest:
             sys.exit("还没有任何项目：从收文案开始（scripts/voice/project.py init）")
         d = latest["dir"]
-    print(json.dumps(status(d), ensure_ascii=False, indent=1))
+    st = status(d)
+    print(json.dumps(st, ensure_ascii=False, indent=1))
+    _cli.report(**st)
 
 
 if __name__ == "__main__":
-    main()
+    _cli.run(main)

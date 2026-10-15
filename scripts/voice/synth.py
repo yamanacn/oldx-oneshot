@@ -11,6 +11,8 @@
   * 固定参数在 common.py：模型、指令（语速较快、不要播音腔）、48k wav。
   * 情绪标签只用一个：以问号结尾的句子前加 QUESTION_TAG（让问句带疑问语气），只加在发给接口的文字里。
   * 标签有时会引出文案里没有的语气词（嘿、哼、哎……）：合并之前对每段识别一次，把多出来的这一声剪掉（fillers.py）；--keep-fillers 不剪。
+  * 要加速/减速只能用 --speed（例如 1.1）：剪完语气词后整体调速（只变快慢、不变调），再拼接、写时间轴。
+    后面的对齐、分段、生成都基于调速后的音频，并且会核对音频指纹；在对齐或分段之后再改音频会被拦下。
 """
 import argparse
 import hashlib
@@ -19,17 +21,22 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import _cli  # noqa: E402
+import _util  # noqa: E402
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common as C
 
+SPEED_MIN, SPEED_MAX = 0.5, 2.0       # ffmpeg atempo 一级能处理的范围
 _lock = threading.Lock()
 _next_submit = [0.0]
 FATAL = {401, 403}
@@ -64,9 +71,17 @@ EMOTIONS = []      # 这个项目的情绪标签规则，main() 里从 <workdir>
 TAGGED = {}        # 段落原文 -> 加好所有标签的文字（见 common.apply_carry）
 
 
+def speakable(t):
+    """只改发给接口的文字、不改文案：换行前没有标点的（标题行）补一个句号，不然标题和下一行连成一句、中间没有停顿；
+    行首的列表序号“1. ”改成“1、”，免得念成“一点”。"""
+    t = re.sub(r"(?m)^(\s*(?:\[[a-z_]+\])?\s*)(\d{1,2})[.．]\s*", r"\1\2、", t.strip())
+    t = re.sub(r"(\S)\s*\n\s*", lambda m: m.group(1) + ("" if m.group(1) in "。！？!?，,、；;：:…”」』）)]" else "。"), t)
+    return t.replace("\n", "")
+
+
 def build_text(raw):
     """发给合成接口的文字：段首沿用的标签 + 问句标签 + 情绪标签。不改文案本身。"""
-    return (TAGGED.get(raw) or C.tag_emotions(C.tag_questions(raw), EMOTIONS)).replace("\n", "").strip()
+    return speakable(TAGGED.get(raw) or C.tag_emotions(C.tag_questions(raw), EMOTIONS)).strip()
 
 
 class Locked(Exception):
@@ -191,6 +206,22 @@ def trim(x, sr):
     return x[s:e], s
 
 
+def change_speed(x, sr, speed, cache_dir):
+    """整体调速（atempo：只变快慢、不变调）。结果按 内容+倍数 缓存在 cache/。"""
+    if abs(speed - 1.0) < 1e-6:
+        return x
+    key = hashlib.sha256(x.tobytes() + ("|%.4f|%d" % (speed, sr)).encode()).hexdigest()[:16]
+    dst = os.path.join(cache_dir, key + ".speed.wav")
+    if not os.path.isfile(dst):
+        src, tmp = dst[:-4] + ".in.wav", dst[:-4] + ".tmp.wav"
+        write_wav(src, x, sr)
+        subprocess.run([C.ffmpeg(), "-y", "-v", "error", "-i", src, "-filter:a", "atempo=%.4f" % speed,
+                        "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", tmp], check=True)
+        os.replace(tmp, dst)
+        os.remove(src)
+    return read_wav(dst)[0]
+
+
 def concat_wavs(paths, dst, gap=0.0):
     parts, sr = [], C.SAMPLE_RATE
     for i, p in enumerate(paths):
@@ -207,10 +238,14 @@ def main():
     ap.add_argument("--paragraphs")
     ap.add_argument("--workers", type=int, default=C.WORKERS)
     ap.add_argument("--gap", type=float, default=C.GAP_SECONDS)
-    ap.add_argument("--dry-run", action="store_true", help="只打印每段实际发给接口的文字（带标签），不联网、不合成")
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="整体调速倍数，例如 1.1（只变快慢、不变调）。要调速只能用这个参数，不要在对齐或分段之后再改音频")
+    ap.add_argument("--yes", action="store_true", help="确认合成（联网，会产生费用）。不加就只预览：打印每段实际发给接口的文字，不联网")
     ap.add_argument("--keep-fillers", action="store_true", help="不剪标签引出来的多余语气词（默认会剪，见 fillers.py）")
     ap.add_argument("--variant", help="另出一版：结果写到 out_<名字>/，不覆盖 out/；后面的对齐和核对加 --out out_<名字>")
     a = ap.parse_args()
+    if not SPEED_MIN <= a.speed <= SPEED_MAX:
+        _cli.fail(_cli.USAGE, "--speed 只能在 %.1f–%.1f 之间（现在是 %s）" % (SPEED_MIN, SPEED_MAX, a.speed))
     wd = a.workdir
     pj = a.paragraphs or os.path.join(wd, "paragraphs.json")
     vj = os.path.join(wd, "voice.json")
@@ -238,10 +273,18 @@ def main():
         for p in paras:
             for frag in C.tags_not_at_sentence_start(C.tag_emotions(p, EMOTIONS)):
                 print("注意：这处标签不在句首，容易被念出来：…%s…" % frag, flush=True)
-    if a.dry_run:
+    if not a.yes:
+        cache_dir = os.path.join(wd, "cache")
+        hits = [i for i, p in enumerate(paras, 1) if os.path.isfile(os.path.join(cache_dir, cache_key(p, voice) + ".wav"))]
         for i, p in enumerate(paras, 1):
-            print("\n--- 段%d（%d 字）---\n%s" % (i, len(p), build_text(p)))
-        print("\n[dry-run] 没有联网，没有合成。指令：%s" % C.INSTRUCTION)
+            print("\n--- 段%d（%d 字）%s---\n%s" % (i, len(p), "（已缓存，不用重新合成）" if i in hits else "", build_text(p)))
+        need = [i for i in range(1, len(paras) + 1) if i not in hits]
+        print("\n[预览] 没有联网，没有合成。指令：%s" % C.INSTRUCTION)
+        if a.speed != 1.0:
+            print("倍速 %.2f：合成后整体调速，之后的对齐、分段都基于调速后的音频。" % a.speed)
+        print("要合成 %d 段、%d 字（%d 段已缓存）。确认后加 --yes。" % (len(need), sum(len(paras[i - 1]) for i in need), len(hits)))
+        _cli.report(preview=True, segments=len(paras), to_synthesize=need, cached=hits,
+                    chars_to_synthesize=sum(len(paras[i - 1]) for i in need), instruction=C.INSTRUCTION, speed=a.speed)
         return
     key = C.require_key()
     cache = os.path.join(wd, "cache")
@@ -267,14 +310,15 @@ def main():
                 cached += hit
             except Fatal as e:
                 print(str(e))
-                sys.exit(4)
+                sys.exit(_cli.KEY_REJECTED)
             except Exception as e:
                 errors.append("段%d：%s" % (i + 1, e))
     if errors:
         print("以下段落失败，未拼接（其余段已缓存，重跑只会补失败的）：")
         for e in errors:
             print("  ", e)
-        sys.exit(1)
+        _cli.report(failed_segments=errors)
+        sys.exit(_cli.REMOTE_FAILED)
 
     if not a.keep_fillers:
         import fillers
@@ -287,6 +331,8 @@ def main():
             notes += ["剪掉多余语气词 " + n for n in c[1]]
 
     fp = hashlib.sha256("|".join(os.path.basename(p) for p in results).encode()).hexdigest()[:16] + "|%.2f" % a.gap
+    if a.speed != 1.0:
+        fp += "|x%.3f" % a.speed                                    # 倍速变了也算换了一版音频
     try:
         arch = archive_previous(out, fp)
         if arch:
@@ -297,7 +343,9 @@ def main():
     sr = C.SAMPLE_RATE
     for i, (p, txt) in enumerate(zip(results, paras), 1):
         x, sr = read_wav(p)
-        safe_write_wav(os.path.join(out, "seg_%02d.wav" % i), x, sr)
+        x = change_speed(x, sr, a.speed, cache)
+        sp = os.path.join(out, "seg_%02d.wav" % i)
+        safe_write_wav(sp, x, sr)
         x, cut = trim(x, sr)
         if merged:
             merged.append(np.zeros(int(a.gap * sr), np.int16))
@@ -306,23 +354,28 @@ def main():
         merged.append(x)
         t += len(x) / sr
         segs.append({"i": i, "chars": len(re.sub(r"\s+", "", txt)), "start": round(start, 3), "end": round(t, 3),
-                     "trim_start": round(cut / sr, 3), "text": txt})
+                     "trim_start": round(cut / sr, 3), "text": txt, "audio_sha": _util.file_sha(sp)})
     try:
         safe_write_wav(os.path.join(out, "merged.wav"), np.concatenate(merged), sr)
     except Locked as e:
         print("\n" + str(e))
-        sys.exit(5)
+        _cli.report(locked=os.path.join(out, "merged.wav"))
+        sys.exit(_cli.FILE_LOCKED)
     json.dump({"voice_id": voice, "model": C.MODEL, "instruction": C.INSTRUCTION, "question_tag": C.QUESTION_TAG, "questions": nq, "gap": a.gap, "fingerprint": fp,
+               "speed": a.speed, "audio_sha": _util.file_sha(os.path.join(out, "merged.wav")),
                "total_seconds": round(t, 3), "segments": segs}, open(os.path.join(out, "timeline.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     if not a.variant:
         C.update_meta(wd, voice_id=voice, audio=os.path.join(out, "merged.wav"), total_seconds=round(t, 3),
                       segments=len(paras))
-    print("\n完成：%d 段，合计 %.1f 秒，耗时 %.1fs（命中缓存 %d 段）" % (len(paras), t, time.time() - t0, cached))
+    print("\n完成：%d 段，合计 %.1f 秒%s，耗时 %.1fs（命中缓存 %d 段）"
+          % (len(paras), t, "（已按 %.2f 倍速）" % a.speed if a.speed != 1.0 else "", time.time() - t0, cached))
     print("合并文件：", os.path.join(out, "merged.wav"))
     for n in notes:
         print("注意：", n)
+    _cli.report(merged=os.path.join(out, "merged.wav"), timeline=os.path.join(out, "timeline.json"),
+                segments=len(paras), total_seconds=round(t, 3), cached=cached, notes=notes, speed=a.speed)
 
 
 if __name__ == "__main__":
-    main()
+    _cli.run(main)

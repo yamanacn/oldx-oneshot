@@ -1,4 +1,4 @@
-"""配音阶段的离线测试（不联网、不花钱）：情绪标签、沿用、核对里查标签被念出来、写文件被占用、旧版本留档、音色历史、--dry-run。
+"""配音阶段的离线测试（不联网、不花钱）：情绪标签、沿用、核对里查标签被念出来、写文件被占用、旧版本留档、音色历史、合成预览。
   python tests/voice/test_voice_stage.py
 """
 import json
@@ -63,6 +63,12 @@ check("波浪号算句末：补标签会落在波浪号后面的整句开头", "
 check("tags_not_at_sentence_start：句中的标签被抓出来，句首的不抓",
       len(C.tags_not_at_sentence_start("好。[happy]对。我觉得[sad]不行")) == 1 and C.tags_not_at_sentence_start("[excited]好。[happy]对！") == [])
 
+# ---------------------------------------------------------------- 发给接口的文字：换行和列表序号（只改发给接口的，不改文案）
+sp = S.speakable("方向：\n\n1. 微软亮剑自研芯片，挑战英伟达霸权\n微软正式推出。\n\n[happy]2. 第二条\n内容”。\n\n以上")
+check("speakable：标题行补句号、列表序号 1. 改成 1、、已有标点的换行不重复加句号",
+      sp == "方向：1、微软亮剑自研芯片，挑战英伟达霸权。微软正式推出。[happy]2、第二条。内容”。以上", sp)
+check("speakable：小数和数字中间的点不动", S.speakable("高出 40.5%，第 3.2 版") == "高出 40.5%，第 3.2 版")
+
 # ---------------------------------------------------------------- 核对：标签被念出来
 check("verify：识别文字里多出一个 Happy 就报出来", V.spoken_tags("以后都能直接用，Happy，老板再也不用", "以后都能直接用，老板再也不用") == [("happy", 1, 0)])
 check("verify：原文本来就有的英文词不误报", V.spoken_tags("用 happy 的心情", "用 happy 的心情") == [])
@@ -123,15 +129,15 @@ check("clone_voice --use：按样本文件名里的字换回旧音色，项目�
 r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "clone_voice.py"), "--workdir", wd, "--use", "不存在"], capture_output=True, text=True, encoding="utf-8", env=dict(os.environ))
 check("clone_voice --use：没有唯一匹配时报错而不是乱选", r.returncode != 0)
 
-# ---------------------------------------------------------------- 整体：--dry-run 不联网、不要密钥
+# ---------------------------------------------------------------- 整体：不加 --yes 只预览，不联网、不要密钥
 pd = os.path.join(TMP, "proj2")
 os.makedirs(pd)
 json.dump({"voice_id": "voice-x"}, open(os.path.join(pd, "voice.json"), "w"))
 json.dump({"paragraphs": ["开场！很好。你觉得呢？不错。", "第二段有一些内容。"]}, open(os.path.join(pd, "paragraphs.json"), "w", encoding="utf-8"), ensure_ascii=False)
 json.dump({"instruction": "测试指令", "tags": [{"at": "开场", "tag": E}, {"at": "不存在", "tag": H}]}, open(os.path.join(pd, "emotions.json"), "w", encoding="utf-8"), ensure_ascii=False)
 env = dict(os.environ, HOME=TMP, USERPROFILE=TMP)
-r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "synth.py"), "--workdir", pd, "--dry-run"], capture_output=True, text=True, encoding="utf-8", env=env)
-check("synth --dry-run：打印带标签的文字、提示没匹配上的规则、不需要密钥、不产生结果文件",
+r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "synth.py"), "--workdir", pd], capture_output=True, text=True, encoding="utf-8", env=env)
+check("synth 预览：打印带标签的文字、提示没匹配上的规则、不需要密钥、不产生结果文件",
       r.returncode == 0 and "[excited]开场" in r.stdout and "没匹配上" in r.stdout and "[curious]你觉得呢" in r.stdout and "[excited]第二段" in r.stdout
       and not os.path.exists(os.path.join(pd, "out", "merged.wav")), r.stdout[-300:] + r.stderr[-300:])
 
@@ -155,7 +161,7 @@ C.update_meta = lambda *a, **k: None
 
 
 def run_main(*extra):
-    sys.argv = ["synth.py", "--workdir", wd, "--keep-fillers", *extra]      # 剪语气词要联网识别，这里离线，单独测
+    sys.argv = ["synth.py", "--workdir", wd, "--keep-fillers", "--yes", *extra]      # 剪语气词要联网识别，这里离线，单独测
     try:
         S.main()
         return 0
@@ -184,7 +190,7 @@ def locked_replace(a, b):
 os.replace, S.time.sleep = locked_replace, lambda s: None
 code = run_main()
 os.replace, S.time.sleep = real_replace, real_sleep
-check("main：merged.wav 被占用时退出码 5，新的另存为 merged_新.wav，不是崩溃", code == 5 and os.path.isfile(os.path.join(wd, "out", "merged_新.wav")), code)
+check("main：merged.wav 被占用时退出码 6（file_locked），新的另存为 merged_新.wav，不是崩溃", code == 6 and os.path.isfile(os.path.join(wd, "out", "merged_新.wav")), code)
 
 
 # ---- 标签引出来的多余语气词：找出来、剪掉、验证

@@ -5,7 +5,6 @@
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import urllib.error
@@ -189,16 +188,13 @@ def update_meta(workdir, **kw):
     json.dump(m, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
 
-# ---------------------------------------------------------------- ffmpeg
+# ---------------------------------------------------------------- ffmpeg（实现在 scripts/_util.py，这里保留原来的名字）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import _util  # noqa: E402
+
+
 def ffmpeg():
-    p = shutil.which("ffmpeg")
-    if p:
-        return p
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        sys.exit("找不到 ffmpeg：请安装 ffmpeg 并加入 PATH，或 pip install imageio-ffmpeg")
+    return _util.ffmpeg_exe()
 
 
 def to_pcm_wav(src, dst, sr=SAMPLE_RATE):
@@ -208,11 +204,5 @@ def to_pcm_wav(src, dst, sr=SAMPLE_RATE):
 
 
 def media_seconds(path):
-    """用 ffmpeg 读时长（秒）。"""
-    r = subprocess.run([ffmpeg(), "-hide_banner", "-i", path], capture_output=True)
-    for line in r.stderr.decode("utf-8", "replace").splitlines():
-        if "Duration:" in line:
-            t = line.split("Duration:")[1].split(",")[0].strip()
-            h, m, s = t.split(":")
-            return int(h) * 3600 + int(m) * 60 + float(s)
-    return None
+    """用 ffmpeg 读时长（秒），读不到返回 None。"""
+    return _util.media_seconds(path)

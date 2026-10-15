@@ -32,7 +32,7 @@
 
 ## 主流程
 
-1. **看原片、拿到逐词时间。** `python scripts/packaging/probe_media.py <原片>` 得到尺寸、帧率、时长；`scripts/packaging/contact_sheet.py --every 6` 抽帧看人物的构图、主色、手在哪、背景里有什么。逐词时间优先用现成的（一条龙流程里是项目目录的 `out/words.json`）。识别文字有同音错字，对照文案核对专名、数字、否定词。
+1. **看原片、拿到逐词时间。** `python scripts/packaging/probe_media.py <原片>` 得到尺寸、帧率、时长；`scripts/packaging/contact_sheet.py --every 6` 抽帧看人物的构图、主色、手在哪、背景里有什么。逐词时间优先用现成的（一条龙流程里是项目目录的 `out/words.json`；项目里有 `avatar/words_final.json` 时用它——oldx-avatar 拼接时裁掉了每段开头几帧，人物视频比配音短，`out/words.json` 越往后差得越多；同理声音用 `avatar/voice_final.wav`。`remotion_new.py --workdir` 会自动选）。识别文字有同音错字，对照文案核对专名、数字、否定词。
 2. **设计。** 读 [design.md](design.md)。通读文案，弄清结构和每一段观众需要看到什么；盘一遍手上的真实素材；用户给了参考就先拆参考；然后把这条片子的设计写下来，放在工程根目录的 `STYLE.md`。
 3. **起工程。** `python scripts/packaging/remotion_new.py --workdir <项目目录>`，读 [remotion-build.md](remotion-build.md)。
 4. **写、看、改。** 在 `Film.tsx` 里把设计写成画面：先把字幕和时间轴这两样框架立起来，再往里填各场的内容。先出静帧看版式，自己挑一遍毛病——底边的字幕和时间轴单独看一眼；太挤和太空两头都查，有参考就和参考的帧并排比，并跑一遍 `density_check.py`；再渲一小段看动效和速度；确认后渲全片。

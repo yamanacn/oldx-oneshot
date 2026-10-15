@@ -3,6 +3,16 @@
   python run_avatar.py --workdir <项目目录>                  # 只做检查和预览，不联网、不花钱
   python run_avatar.py --workdir <项目目录> --yes            # 上传文件并提交（会产生费用）
   python run_avatar.py --workdir <项目目录> --yes --only 2   # 只重跑第 2 段，其余沿用已有结果
+  python run_avatar.py --workdir <项目目录> --yes --only 2 --seed random   # 重跑第 2 段并换一个随机种子（提示词不用改）
+  python run_avatar.py --workdir <项目目录> --yes --all      # 全部重跑（旧片段都会收进历史，不会丢）
+
+历史版本：重跑某段之前，它现在的片段会自动收进 avatar/takes/seg_NN/（连同当时的种子、工作流版本、提示词），
+不会被覆盖。想换回以前的版本用 takes.py。
+工作流版本：每段都记下提交时的工作流版本标签（check_setup.py --set-workflow 设置）。用户改过云端工作流就先记一个，
+同一条片子里混用不同工作流版本生成的片段时，预览会提示。
+
+随机种子：每段用的种子记在 result.json 的 seeds 里。不带 --seed 时，跑过的段沿用它上次的种子，没跑过的用默认值 42，
+所以同样的输入重跑会得到同样的结果；想让某段出一个不同的结果，用 --only <段号> --seed random（或 --seed <整数>）。
 
 并发数 = min(段数, 会员档位对应并发)，档位用 check_setup.py --set-plan 记录；没记录按 1 路。
 超出并发的段在本地排队。实例默认 plus（48G，用户已授权）；ultra 需要显式 --instance ultra，本技能不会自行升级。
@@ -19,15 +29,19 @@
 import argparse
 import json
 import os
+import random
 import re
 import sys
 import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import _cli  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common as C
+import takes as TK
 
 lock = threading.Lock()
 NON_RETRYABLE = re.compile(r"余额不足|余额|欠费|RH币不足|insufficient|balance|arrears|参数错误|invalid ?param|未授权|无权限|unauthorized|forbidden", re.I)
@@ -40,14 +54,14 @@ def log(msg):
 
 
 class State:
-    """result.json：results（已完成）、errors、pending（已提交未完成的任务号）。每次变化立即落盘。"""
+    """result.json：results（已完成）、errors、pending（已提交未完成的任务号）、seeds（每段用的随机种子）。每次变化立即落盘。"""
 
     def __init__(self, path):
         self.path, self.lk = path, threading.Lock()
-        self.d = {"results": {}, "errors": {}, "pending": {}}
+        self.d = {"results": {}, "errors": {}, "pending": {}, "seeds": {}}
         if os.path.isfile(path):
             self.d.update(json.load(open(path, encoding="utf-8")))
-            for k in ("results", "errors", "pending"):
+            for k in ("results", "errors", "pending", "seeds"):
                 self.d.setdefault(k, {})
 
     def _save(self):
@@ -83,8 +97,10 @@ def with_retry(fn, what, tries=3, base=2.0):
     raise RuntimeError("%s重试 %d 次仍失败：%s" % (what, tries, last))
 
 
-def submit(i, body, key):
-    for _ in range(12):
+def submit(i, body, key, wait_min=30):
+    """提交；并发名额被占满、排队中被拒时耐心重试（20 秒起，逐步拉长到 60 秒），最多等 wait_min 分钟。"""
+    t0, wait = time.time(), 20
+    while True:
         st, r = C.http_json("%s/run/ai-app/%s" % (C.BASE, C.app_id()), body, key)
         task = r.get("taskId")
         if task and r.get("status") != "FAILED":
@@ -95,11 +111,14 @@ def submit(i, body, key):
         if NON_RETRYABLE.search(msg):
             raise RuntimeError("[不可重试] 提交被拒：" + msg[:300])
         if st in (0, 429) or any(k in msg for k in RATE_LIMIT_WORDS):
-            log("[段%d] 暂时不能提交（%s），20 秒后重试" % (i, msg[:80]))
-            time.sleep(20)
+            if time.time() - t0 + wait > wait_min * 60:
+                raise RuntimeError("排队等了 %d 分钟还是提交不上（并发名额一直被占着）：%s。稍后重跑同一条命令即可，已成功的段不会重复提交"
+                                   % (wait_min, msg[:120]))
+            log("[段%d] 名额被占满，排队中（%s），%d 秒后再试；已等 %.0f 分钟，最多等 %d 分钟" % (i, msg[:60], wait, (time.time() - t0) / 60, wait_min))
+            time.sleep(wait)
+            wait = min(60, wait + 10)
             continue
         raise RuntimeError("提交失败：" + msg[:300])
-    raise RuntimeError("多次提交都被拒绝（并发/排队）")
 
 
 def poll(i, task, key, timeout_s, interval=10, max_conn_errors=18):
@@ -128,8 +147,10 @@ def poll(i, task, key, timeout_s, interval=10, max_conn_errors=18):
     return "TIMEOUT", None
 
 
-def run_one(seg, prompt, img_val, w, h, key, instance, out_dir, timeout_min, tries, state, interval=10, backoff=15.0):
+def run_one(seg, prompt, img_val, w, h, key, instance, out_dir, timeout_min, tries, state, interval=10, backoff=15.0, seed=None, meta=None,
+            queue_min=30):
     i = seg["i"]
+    meta = dict(meta or {})
     for attempt in range(1, tries + 2):
         pend = state.get("pending", i)
         if pend and pend.get("task"):
@@ -144,9 +165,12 @@ def run_one(seg, prompt, img_val, w, h, key, instance, out_dir, timeout_min, tri
                 {"nodeId": C.NODE_WIDTH, "fieldName": "value", "fieldValue": str(w), "description": "宽"},
                 {"nodeId": C.NODE_HEIGHT, "fieldName": "value", "fieldValue": str(h), "description": "高"}],
                 "instanceType": instance, "usePersonalQueue": "false"}
-            task = submit(i, body, key)
-            state.set("pending", i, {"task": task, "instance": instance, "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S")})
-            log("[段%d] 已提交 task %s（第 %d 次）" % (i, task, attempt))
+            if seed is not None:
+                body["nodeInfoList"].append({"nodeId": C.NODE_SEED, "fieldName": "noise_seed", "fieldValue": str(seed), "description": "随机种"})
+            task = submit(i, body, key, wait_min=queue_min)
+            state.set("pending", i, {"task": task, "instance": instance, "seed": seed, "workflow": meta.get("workflow"),
+                                     "prompt_sha": meta.get("prompt_sha"), "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+            log("[段%d] 已提交 task %s（第 %d 次，种子 %s）" % (i, task, attempt, seed))
         outcome, q = poll(i, task, key, timeout_min * 60, interval)
         if outcome == "SUCCESS":
             mp4 = [x for x in (q.get("results") or []) if x.get("outputType") == "mp4" and x.get("url")]
@@ -157,7 +181,11 @@ def run_one(seg, prompt, img_val, w, h, key, instance, out_dir, timeout_min, tri
             # 云端已成功（已计费）：下载失败只重下，绝不重新提交
             with_retry(lambda: urllib.request.urlretrieve(mp4[0]["url"], dst), "[段%d] 下载视频" % i, tries=4)
             log("[段%d] 已保存 %s" % (i, dst))
-            res = {"i": i, "task": task, "file": dst, "usage": q.get("usage")}
+            resumed = bool(pend and pend.get("task"))
+            res = {"i": i, "task": task, "file": dst, "seconds": seg["duration"], "seed": pend.get("seed", seed) if resumed else seed, "usage": q.get("usage"),
+                   "workflow": pend.get("workflow", meta.get("workflow")) if resumed else meta.get("workflow"),
+                   "app_id": meta.get("app_id"), "prompt_sha": pend.get("prompt_sha", meta.get("prompt_sha")) if resumed else meta.get("prompt_sha"),
+                   "prompt": meta.get("prompt"), "note": meta.get("note", ""), "created": time.strftime("%Y-%m-%d %H:%M:%S")}
             state.set("results", i, res)
             state.drop("pending", i)
             state.drop("errors", i)
@@ -182,50 +210,138 @@ def run_one(seg, prompt, img_val, w, h, key, instance, out_dir, timeout_min, tri
     raise RuntimeError("段%d 没有得到结果" % i)
 
 
+CANCEL_URL = "https://www.runninghub.cn/task/openapi/cancel"
+
+
+def cancel_tasks(od, state, only):
+    """取消已提交、还没完成的云端任务（result.json 的 pending）。接口：POST /task/openapi/cancel {apiKey, taskId}。"""
+    pend = {int(k): v for k, v in state.d.get("pending", {}).items() if v.get("task") and (not only or int(k) in only)}
+    if not pend:
+        print("没有正在云端跑的任务。")
+        _cli.report(cancelled=[], failed_cancel={}, next=None)
+        return
+    key = C.require_key()
+    ok, bad = [], {}
+    for i, p in sorted(pend.items()):
+        st, r = C.http_json(CANCEL_URL, {"apiKey": key, "taskId": p["task"]}, key)
+        if st == 200 and str(r.get("code")) in ("0", "200"):
+            ok.append(i)
+            state.drop("pending", i)
+            print("段%d：已取消任务 %s" % (i, p["task"]))
+        else:
+            bad[i] = "HTTP %s %s" % (st, json.dumps({k: r.get(k) for k in ("code", "msg", "message")}, ensure_ascii=False)[:200])
+            print("段%d：取消失败（%s）。任务号 %s，可以到 RunningHub 后台手动取消" % (i, bad[i], p["task"]))
+    _cli.report(cancelled=ok, failed_cancel=bad, next=None if not bad else "到 RunningHub 后台手动取消失败的任务")
+    if bad:
+        sys.exit(_cli.REMOTE_FAILED)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--instance", default=C.DEFAULT_INSTANCE, choices=["default", "plus", "ultra"])
     ap.add_argument("--concurrency", type=int)
     ap.add_argument("--only", type=int, nargs="*")
+    ap.add_argument("--all", action="store_true", help="全部段重跑（旧片段收进历史）")
+    ap.add_argument("--note", default="", help="给这次生成的版本记一句备注，例如“换成中文叙述”")
+    ap.add_argument("--seed", help="随机种子：整数，或 random（每段各取一个随机数）。不填：没跑过的段用 42；跑过的段沿用上次的种子，"
+                                   "但提示词和工作流都没改时自动换随机种子（不然结果一样）")
     ap.add_argument("--retries", type=int, default=1)
     ap.add_argument("--timeout-min", type=int, default=45)
+    ap.add_argument("--queue-min", type=int, default=30, help="并发名额被占满时最多排队等几分钟（默认 30）")
+    ap.add_argument("--cancel", action="store_true", help="取消已提交、还没完成的云端任务（配合 --only 只取消某几段）")
     ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--legacy", action="store_true", help="旧项目：plan.json 里没有音频指纹也继续")
     a = ap.parse_args()
     od = os.path.join(a.workdir, "avatar")
+    if a.cancel:
+        return cancel_tasks(od, State(os.path.join(od, "result.json")), a.only)
     plan = json.load(open(os.path.join(od, "plan.json"), encoding="utf-8"))
     info = json.load(open(os.path.join(od, "image_info.json"), encoding="utf-8"))
+    C.verify_plan_audio(a.workdir, plan, a.legacy)         # 分段之后音频被改过（比如调速）就停下，不提交
     segs = plan["segments"]
     prompts = {}
     for s in segs:
         p = os.path.join(od, "prompts", "segment_%02d.txt" % s["i"])
         if not os.path.isfile(p):
-            sys.exit("缺少提示词：%s（先运行 build_prompts.py）" % p)
+            _cli.fail(_cli.ERROR, "缺少提示词：%s（先运行 build_prompts.py）" % p)
         prompts[s["i"]] = open(p, encoding="utf-8").read()
     w, h = info["width"], info["height"]
     conc = min(C.concurrency(a.concurrency), len(segs))
     state = State(os.path.join(od, "result.json"))
-    if a.only is not None:                                 # 指定重跑：丢掉这些段的旧结果和旧任务
+    if a.all:
+        a.only = [s["i"] for s in segs]
+    old_results = {k: dict(v) for k, v in state.d["results"].items()}        # 丢掉之前留一份，收进历史时用
+    if a.only is not None and a.yes:                       # 指定重跑：丢掉这些段的旧结果和旧任务（预览时不动 result.json）
         for i in a.only:
             state.drop("results", i)
             state.drop("pending", i)
             state.drop("errors", i)
-    done = {int(k): v for k, v in state.d["results"].items() if os.path.isfile(v["file"])}
+    if a.seed not in (None, "random") and not re.fullmatch(r"\d{1,15}", a.seed):
+        _cli.fail(_cli.USAGE, "--seed 只能是非负整数或 random")
+    done = {int(k): v for k, v in state.d["results"].items() if os.path.isfile(v["file"]) and not (a.only is not None and int(k) in a.only)}
     todo = [s for s in segs if s["i"] not in done and (a.only is None or s["i"] in a.only)]
     resumable = [s["i"] for s in todo if state.get("pending", s["i"])]
+    seeds = {}
+    for s in todo:                                         # 已提交未完成的任务沿用它提交时的种子，不受 --seed 影响
+        pend = state.get("pending", s["i"]) or {}
+        if pend.get("task"):
+            seeds[s["i"]] = pend.get("seed", state.get("seeds", s["i"]))
+        elif a.seed == "random":
+            seeds[s["i"]] = random.randint(1, 2 ** 31 - 1)
+        elif a.seed is not None:
+            seeds[s["i"]] = int(a.seed)
+        else:
+            old = state.get("seeds", s["i"])
+            seeds[s["i"]] = C.DEFAULT_SEED if old is None else old
     cfg = C.load_config()
+    wf_label, wf_at = C.workflow()
+    auto_seed = []                                         # 重跑时提示词、工作流、种子都没变：结果会一模一样，自动换随机种子
+    for s in todo:
+        old = old_results.get(str(s["i"])) or {}
+        same = (old.get("prompt_sha") == TK.prompt_sha(prompts[s["i"]]) and (old.get("workflow") or "未记录") == wf_label
+                and old.get("seed") == seeds[s["i"]])
+        if a.seed is None and old and same and not (state.get("pending", s["i"]) or {}).get("task"):
+            seeds[s["i"]] = random.randint(1, 2 ** 31 - 1)
+            auto_seed.append(s["i"])
+    if auto_seed:
+        print("段%s 的提示词和工作流都没改、种子也一样，重跑会得到一模一样的结果：已自动换成随机种子。想固定种子就用 --seed <整数>。"
+              % "、".join(map(str, auto_seed)))
+    to_archive = [s["i"] for s in todo if os.path.isfile(os.path.join(od, "clips", "seg_%02d.mp4" % s["i"]))
+                  and not (state.get("pending", s["i"]) or {}).get("task")]
     print("尺寸 %d×%d，实例 %s，应用 %s" % (w, h, a.instance, C.app_id()))
+    print("工作流版本：%s%s" % (wf_label, "（记录于 %s）" % wf_at if wf_at else "（用户改过工作流时用 check_setup.py --set-workflow 记一个）"))
+    kept_wf = {k: (v.get("workflow") or "未记录") for k, v in state.d["results"].items()
+               if int(k) in done and (v.get("workflow") or "未记录") != wf_label}
+    if kept_wf:
+        print("注意：沿用的段%s 是在别的工作流版本下生成的（%s），和这次新生成的放在一起，前后画面可能不一致。"
+              % ("、".join(sorted(kept_wf, key=int)), "、".join(sorted(set(kept_wf.values())))))
+    if to_archive:
+        print("段%s 现有的片段会先收进历史版本（takes.py 可以换回来），不会被覆盖。" % "、".join(map(str, to_archive)))
     print("会员档位：%s，并发 %d（共 %d 段，本次处理 %d 段，沿用已有 %d 段）" % (cfg.get("plan", "未记录"), conc, len(segs), len(todo), len(done)))
     if resumable:
         print("其中段%s 有上次已提交、未完成的云端任务，会先续上它们，不会重复提交。" % "、".join(map(str, resumable)))
     if "concurrency" not in cfg and a.concurrency is None:
         print("提示：还没记录会员档位，只按 1 路并发；可用 check_setup.py --set-plan 记录。")
     for s in todo:
-        print("  段%d：%.1f 秒  提示词 %d 字  %s" % (s["i"], s["duration"], len(prompts[s["i"]]), os.path.basename(s["audio"])))
+        old = state.get("seeds", s["i"])
+        note = "" if old is None else ("（和上次相同：输入没改的话结果也会相同）" if old == seeds[s["i"]] else "（上次是 %s）" % old)
+        print("  段%d：%.1f 秒  提示词 %d 字  %s  种子 %s%s" % (s["i"], s["duration"], len(prompts[s["i"]]), os.path.basename(s["audio"]), seeds[s["i"]], note))
     if a.instance == "ultra":
         print("注意：ultra 未经用户授权，请确认用户同意后再用。")
+    todo_s = sum(s["duration"] for s in todo)
+    lo, mid, hi = C.cost_estimate(todo_s)[:3]
+    basis = C.cost_estimate(todo_s)[3]
+    if todo:
+        print("预计费用：约 %d RH 币（%d–%d），%s；以 RunningHub 后台为准。" % (mid, lo, hi, basis))
+    _cli.report(estimate_coins={"low": lo, "mid": mid, "high": hi, "basis": basis})
+    _cli.report(workflow=wf_label, instance=a.instance, concurrency=conc, total_segments=len(segs),
+                todo=[{"i": s["i"], "seconds": s["duration"], "seed": seeds[s["i"]]} for s in todo],
+                reused=sorted(done), resumable=resumable, will_archive=to_archive, auto_seed=auto_seed,
+                todo_seconds=round(sum(s["duration"] for s in todo), 2))
     if not a.yes:
         print("[预览] 没有联网，也没有产生费用。确认后加 --yes。")
+        _cli.report(preview=True)
         return
     if not todo:
         print("没有需要提交的段。")
@@ -234,32 +350,44 @@ def main():
     os.makedirs(os.path.join(od, "clips"), exist_ok=True)
     img_val = with_retry(lambda: C.upload(info["uploaded_image"], key), "上传图片")
     log("图片已上传")
+    for s in todo:
+        state.set("seeds", s["i"], seeds[s["i"]])
+    for i in to_archive:
+        n = TK.archive(od, i, old_results.get(str(i)))
+        if n:
+            log("[段%d] 原来的片段已收进历史版本 %d" % (i, n))
+    meta = {"workflow": wf_label, "app_id": C.app_id(), "note": a.note}
     errors = {}
     with ThreadPoolExecutor(max_workers=max(1, conc)) as ex:
         futs = {ex.submit(run_one, s, prompts[s["i"]], img_val, w, h, key, a.instance,
-                          os.path.join(od, "clips"), a.timeout_min, a.retries, state): s["i"] for s in todo}
+                          os.path.join(od, "clips"), a.timeout_min, a.retries, state, seed=seeds[s["i"]],
+                          meta={**meta, "prompt": prompts[s["i"]], "prompt_sha": TK.prompt_sha(prompts[s["i"]])}, queue_min=a.queue_min): s["i"] for s in todo}
         for f, i in futs.items():
             try:
                 f.result()
             except PermissionError as e:
                 print(str(e), "请重新获取 Key。")
-                sys.exit(4)
+                sys.exit(_cli.KEY_REJECTED)
             except Exception as e:
                 errors[i] = str(e)
                 state.set("errors", i, str(e))
     results = {int(k): v for k, v in state.d["results"].items()}
-    total, known = 0.0, 0
+    total, known, coins = 0.0, 0, 0.0
     print("\n=== 汇总 ===")
     for i in sorted(results):
         u = results[i].get("usage") or {}
-        cost = u.get("consumeMoney")
+        cost, cn = u.get("consumeMoney"), u.get("consumeCoins")
         try:
             if cost not in (None, ""):
                 total += float(cost)
                 known += 1
+            elif cn not in (None, ""):
+                coins += float(cn)
+                known += 1
         except ValueError:
             pass
-        print("段%d：成功 费用=%s 用时=%ss" % (i, cost if cost not in (None, "") else "接口没返回", u.get("taskCostTime")))
+        shown = ("%s 元" % cost) if cost not in (None, "") else ("%s RH 币" % cn) if cn not in (None, "") else "接口没返回"
+        print("段%d：成功 费用=%s 用时=%ss" % (i, shown, u.get("taskCostTime")))
     for i in sorted(errors):
         print("段%d：失败 → %s" % (i, errors[i][:300]))
     if results and known == 0:      # 有的账号或应用的接口不返回费用：合计不是 0 元，是不知道
@@ -267,12 +395,15 @@ def main():
     elif known < len(results):
         print("本次已知费用合计 = %s（只有 %d/%d 段返回了费用，实际更多，以后台为准）" % (round(total, 4), known, len(results)))
     else:
-        print("本次已知费用合计 =", round(total, 4))
+        print("本次已知费用合计 = %s%s" % ("%s 元" % round(total, 4) if total else "", ("%s%d RH 币" % ("，" if total else "", coins)) if coins else ""))
+    _cli.report(preview=False, done=sorted(results), failed={str(k): v[:300] for k, v in errors.items()},
+                cost_known=round(total, 4) if total else None, coins_known=round(coins) if coins else None, cost_reported_segments=known,
+                result_json=os.path.join(od, "result.json"))
     if errors:
         print("有失败的段，未拼接。排查后重跑本脚本即可：已成功的段不会重复提交，仍在云端的任务会被续上；"
               "想强制重做某段用 --only <段号>。不要自行换更大的实例。")
-        sys.exit(1)
+        sys.exit(_cli.REMOTE_FAILED)
 
 
 if __name__ == "__main__":
-    main()
+    _cli.run(main)
