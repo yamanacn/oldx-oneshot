@@ -70,6 +70,8 @@ def load_spec(path):
     spec = json.loads(path.read_text(encoding="utf-8-sig"))
     base = path.parent
     spec["presenter"] = str((base / spec["presenter"]).resolve())
+    if spec.get("voice"):
+        spec["voice"] = str((base / spec["voice"]).resolve())
     spec["pip"] = {**PIP_DEFAULTS, **spec.get("pip", {})}
     segs = sorted(spec.get("segments", []), key=lambda s: s["start"])
     for i, s in enumerate(segs):

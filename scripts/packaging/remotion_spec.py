@@ -25,16 +25,25 @@ def main():
     r = subprocess.run("npx remotion compositions src/index.ts", cwd=proj, shell=True, capture_output=True)
     text = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout + r.stderr).decode("utf-8", "replace"))
     m = re.search(r"PIP_SPEC (\{.*\})", text)
-    if not m:
-        sys.exit("没有取到小窗区间：确认 Film.tsx 末尾调用了 logSpec(...)。命令输出的最后几行：\n" + text[-600:])
-    got = json.loads(m[1])
+    mc = re.search(r"CARD_SPEC (\{.*\})", text)
+    if not m and not mc:
+        sys.exit("没有取到人物区间：确认 Film.tsx 末尾调用了 logSpec(...) 或 logCardSpec(...)。命令输出的最后几行：\n" + text[-600:])
     film = json.loads((proj / "src" / "data" / "film.json").read_text(encoding="utf-8"))
+    out = Path(a.out) if a.out else proj / "spec.json"
+    if mc:   # 人物卡（core/PresenterCard）：每段一个固定的框（像素），质检按框取区域
+        card = json.loads(mc[1])
+        spec = {"presenter": "public/presenter.mp4", "voice": "public/voice.wav", "size": [film["width"], film["height"]], "fps": str(film["fps"]),
+                "pip": {"transition": card.get("dur", 0.65)}, "segments": [],
+                "cards": [{"start": round(x["start"], 3), "end": round(x["end"], 3), "pose": x["pose"], "box": x["box"]} for x in card["spans"]]}
+        out.write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(json.dumps({"out": str(out), "cards": [[c["start"], c["end"], c["pose"]] for c in spec["cards"]]}, ensure_ascii=False))
+        return
+    got = json.loads(m[1])
     pip = got["pip"]
-    spec = {"presenter": "public/presenter.mp4", "size": [film["width"], film["height"]], "fps": str(film["fps"]),
+    spec = {"presenter": "public/presenter.mp4", "voice": "public/voice.wav", "size": [film["width"], film["height"]], "fps": str(film["fps"]),
             "pip": {"diameter": pip["diameter"], "margin": pip["margin"], "margin_x": pip.get("marginX"), "margin_y": pip.get("marginY"),
                     "transition": pip["transition"], "focus": pip["focus"], "focus_size": pip["focusSize"]},
             "segments": [{"start": round(s, 3), "end": round(e, 3), "mode": "content_pip", "content": None} for s, e in got["runs"]]}
-    out = Path(a.out) if a.out else proj / "spec.json"
     out.write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")
     print(json.dumps({"out": str(out), "runs": [[s["start"], s["end"]] for s in spec["segments"]]}, ensure_ascii=False))
 

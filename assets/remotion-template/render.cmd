@@ -2,6 +2,11 @@
 rem Render the full video: GPU browser rendering (ANGLE), parallel tabs, NVENC encoding.
 rem Media or words changed? Run scripts/packaging/remotion_new.py on the project first.
 cd /d "%~dp0"
+rem Pre-flight: hooks after an early return crash the render mid-way (React #310); type errors are easier to read here.
+call node tools/check-hooks.mjs src
+if errorlevel 1 exit /b 1
+call npx tsc --noEmit -p .
+if errorlevel 1 exit /b 1
 set /a CONC=NUMBER_OF_PROCESSORS/2
 if %CONC% LSS 1 set CONC=1
 if %CONC% GTR 16 set CONC=16

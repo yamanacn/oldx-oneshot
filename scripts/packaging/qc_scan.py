@@ -48,8 +48,13 @@ if __name__ == "__main__":
     ap.add_argument("--black", type=float, default=0.1, help="黑帧最短时长")
     ap.add_argument("--freeze", type=float, default=1.0, help="冻结最短时长")
     ap.add_argument("--silence", type=float, default=2.0, help="静音最短时长")
+    ap.add_argument("--expected-still", default="", help="已知画面变化很小的时段，例如 64-69,110.8-114（逐行打字的界面、片尾定版）")
     a = ap.parse_args()
     r = scan(a.video, a.black, a.freeze, a.silence)
+    spans = [tuple(float(v) for v in x.split("-")) for x in a.expected_still.split(",") if "-" in x]
+    for f in r["freeze"]:
+        f["expected"] = any(s0 - 0.3 <= f["start"] and f["end"] <= s1 + 0.3 for s0, s1 in spans)
+    r["freeze_unexpected"] = [f for f in r["freeze"] if not f["expected"]]
     if a.expect_duration is not None and r["duration"] is not None:
         r["duration_diff"] = round(r["duration"] - a.expect_duration, 3)
         r["duration_ok"] = abs(r["duration_diff"]) <= 0.1

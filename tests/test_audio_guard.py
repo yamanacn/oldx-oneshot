@@ -1,7 +1,7 @@
-"""调速只能在合成时做、之后每一步核对音频指纹的离线测试（不联网、不需要密钥）。
+"""合成之后每一步核对音频指纹的离线测试（不联网、不需要密钥）。本技能不做调速，--speed 已删掉。
   python tests/test_audio_guard.py
 
-覆盖：synth.py --speed（时长、记录、范围）；对齐之前、分段之前、提交之前、成片之前改过音频都会被拦下；
+覆盖：synth.py 不再接受 --speed；对齐之前、分段之前、提交之前、成片之前（手动）改过音频都会被拦下；
 旧项目没有指纹时跳过核对、不误拦。
 """
 import json
@@ -107,24 +107,18 @@ def project(name):
     return wd
 
 
-# ---------------------------------------------------------------- synth --speed
-w1, w2 = project("p_1x"), project("p_fast")
-check("synth 不调速：正常合成", in_proc(S, ["synth.py", "--workdir", w1, "--keep-fillers", "--yes"]) == 0)
-check("synth --speed 1.1：正常合成", in_proc(S, ["synth.py", "--workdir", w2, "--keep-fillers", "--yes", "--speed", "1.1"]) == 0)
-t1 = json.load(open(os.path.join(w1, "out", "timeline.json"), encoding="utf-8"))
+# ---------------------------------------------------------------- synth：不做调速
+w2 = project("p_voice")
+check("synth 正常合成", in_proc(S, ["synth.py", "--workdir", w2, "--keep-fillers", "--yes"]) == 0)
 t2 = json.load(open(os.path.join(w2, "out", "timeline.json"), encoding="utf-8"))
-d1, d2 = _util.wav_seconds(os.path.join(w1, "out", "merged.wav")), _util.wav_seconds(os.path.join(w2, "out", "merged.wav"))
-speech_1x = sum(s["end"] - s["start"] for s in t1["segments"])
-speech_fast = sum(s["end"] - s["start"] for s in t2["segments"])
-check("synth --speed 1.1：说话部分变成原来的 1/1.1，段间停顿不跟着缩", abs(speech_fast - speech_1x / 1.1) < 0.15 and abs(d2 - (speech_fast + t2["gap"])) < 0.05,
-      "%.2f %.2f %.2f" % (speech_1x, speech_fast, d2))
-check("timeline.json 记下倍速和整条、每段音频的指纹", t2.get("speed") == 1.1 and t2.get("audio_sha") == _util.file_sha(os.path.join(w2, "out", "merged.wav"))
-      and all(s.get("audio_sha") for s in t2["segments"]) and t1.get("speed") == 1.0)
-check("倍速不同，指纹不同（换倍速算换一版音频，旧的对齐结果会作废）", t1["fingerprint"] != t2["fingerprint"])
-r, j = sub(os.path.join(VOICE, "synth.py"), "--workdir", w2, "--speed", "3")
-check("synth --speed 超出 0.5–2.0：退出码 2", r.returncode == 2 and "speed" in (j.get("error") or ""), r.stderr[-200:])
-r, j = sub(os.path.join(VOICE, "synth.py"), "--workdir", w2, "--speed", "1.1")
-check("synth 预览里写明倍速", r.returncode == 0 and j.get("preview") and j.get("speed") == 1.1 and "倍速" in r.stdout)
+check("timeline.json 记下整条、每段音频的指纹，不再有倍速", t2.get("audio_sha") == _util.file_sha(os.path.join(w2, "out", "merged.wav"))
+      and all(s.get("audio_sha") for s in t2["segments"]) and "speed" not in t2)
+r = subprocess.run([sys.executable, os.path.join(VOICE, "synth.py"), "--workdir", w2, "--speed", "1.1"], capture_output=True, text=True,
+                   encoding="utf-8", errors="replace")
+check("synth 不再接受 --speed（调速功能已删掉）", r.returncode == 2 and "--speed" in r.stderr, r.stderr[-200:])
+r = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "pipeline.py"), "voice", "--workdir", w2, "--speed", "1.1"],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+check("pipeline voice 不再接受 --speed", r.returncode == 2 and "--speed" in r.stderr, r.stderr[-200:])
 
 # ---------------------------------------------------------------- 合成之后、对齐之前改音频
 wd = w2
@@ -134,8 +128,9 @@ keep = os.path.join(TMP, "merged_keep.wav")
 shutil.copy2(mp, keep)
 speed_up(mp)
 r, j = sub(os.path.join(VOICE, "align_words.py"), "--workdir", wd)
-check("合成后手动加速 merged.wav：align_words 拒绝（退出码 1，说清楚用 synth --speed）",
-      r.returncode == 1 and "被改过" in (j.get("error") or "") and "像是调过速" in j["error"] and "synth.py --speed" in j["error"], r.stderr[-300:])
+check("合成后手动加速 merged.wav：align_words 拒绝（退出码 1，说清楚要从合成重来、本技能不做调速）",
+      r.returncode == 1 and "被改过" in (j.get("error") or "") and "像是被调过速" in j["error"] and "不做调速" in j["error"]
+      and "--speed" not in j["error"], r.stderr[-300:])
 shutil.copy2(keep, mp)
 seg1 = os.path.join(out, "seg_01.wav")
 seg_keep = os.path.join(TMP, "seg1_keep.wav")
@@ -148,7 +143,7 @@ shutil.copy2(seg_keep, seg1)
 # ---------------------------------------------------------------- 对齐
 check("音频没动过：align_words 正常对齐", in_proc(A, ["align_words.py", "--workdir", wd, "--yes"]) == 0)
 wj = json.load(open(os.path.join(out, "words.json"), encoding="utf-8"))
-check("words.json 记下音频指纹、倍速和真实总长", wj.get("audio_sha") == _util.file_sha(mp) and wj.get("speed") == 1.1
+check("words.json 记下音频指纹和真实总长", wj.get("audio_sha") == _util.file_sha(mp) and "speed" not in wj
       and abs(wj["total_seconds"] - _util.wav_seconds(mp)) < 0.01)
 
 # ---------------------------------------------------------------- 对齐之后、分段之前改音频
@@ -161,8 +156,8 @@ shutil.copy2(keep, mp)
 # ---------------------------------------------------------------- 分段
 r, j = sub(os.path.join(AVATAR, "plan_segments.py"), "--workdir", wd)
 plan = json.load(open(os.path.join(wd, "avatar", "plan.json"), encoding="utf-8")) if r.returncode == 0 else {}
-check("音频没动过：plan_segments 正常分段，记下整条和每段的指纹、倍速",
-      r.returncode == 0 and plan.get("audio_sha") == _util.file_sha(mp) and plan.get("speed") == 1.1
+check("音频没动过：plan_segments 正常分段，记下整条和每段的指纹",
+      r.returncode == 0 and plan.get("audio_sha") == _util.file_sha(mp) and "speed" not in plan
       and all(s.get("audio_sha") == _util.file_sha(s["audio"]) for s in plan["segments"]) and len(plan["segments"]) >= 2, r.stderr[-300:])
 json.dump({"width": 512, "height": 512}, open(os.path.join(wd, "avatar", "image_info.json"), "w"))
 
@@ -173,7 +168,7 @@ shutil.copy2(seg2, seg2_keep)
 speed_up(seg2)
 r, j = sub(os.path.join(AVATAR, "run_avatar.py"), "--workdir", wd)
 check("分段后手动加速 avatar/seg_02.wav：run_avatar 连预览都不给（退出码 1），更不会提交",
-      r.returncode == 1 and "分段之后被改过" in (j.get("error") or "") and "像是调过速" in j["error"]
+      r.returncode == 1 and "分段之后被改过" in (j.get("error") or "") and "像是被调过速" in j["error"]
       and not os.path.isfile(os.path.join(wd, "avatar", "result.json")), r.stderr[-300:])
 shutil.copy2(seg2_keep, seg2)
 speed_up(mp)

@@ -20,7 +20,24 @@
 git clone https://github.com/yamanacn/oldx-oneshot.git ~/.claude/skills/oldx-oneshot
 ```
 
-然后在 Claude Code 里说“用 oldx-oneshot 帮我把这段文案做成口播视频”，并给它文案、10–20 秒的人声样本和一张口播图片。
+然后在 Claude Code 里说“用 oldx-oneshot 帮我把这段文案做成口播视频”，并给它文案、10–20 秒的人声样本和一张口播图片。只做其中一段也行：只要配音、只要人物视频，或者只给现成的口播视频做包装。
+
+## 它会在哪里停下来等你
+
+花钱和返工代价大的地方才停，其余自动往下做：
+
+- **配音做完**：先发试听文件给你，配音一改，后面的人物视频就作废，所以提交生成前一定要有你对这一版配音的确认（写在代码里，没有确认会被拦下）。
+- **提交生成人物视频前**：报段数和预计 RH 币。段数多时先跑 1–2 段样段给你看动作幅度和手势，再全量提交。开头会问一句动作要小、中还是大。
+- **包装定风格前**：先出 2–3 个整体想法不同的概念静帧让你选，再出 3 张样张和一段 5 秒样段，你点头才做全片。给了参考片的，会问清楚借鉴哪几层（动效、节奏、版式、配色、元素），没要照搬的层不会出现参考片的元素。
+
+## 包装能做什么
+
+- 每条片子从白纸设计，没有预设模板；动画可以用 three.js / R3F、着色器、后期特效、GSAP、Lottie、PixiJS、d3。
+- 底部字幕（原文案、带标点）和分段时间轴是固定会有的。
+- **插入演示录屏**：`timeline_edit.py` 在口播的停顿里插空档，让录屏和满屏动画演完再说下一句；空档里人物是定格的，模板会让讲者在空档里离场、逐帧检查不露面。
+- **录屏处理**：`demo_prep.py` 裁掉浏览器边框、转恒定帧率，并在转码时就把 API Key、账号、余额等敏感区域模糊掉；合成里的演示窗口按口播变速、点击处推近、加光标光圈。
+- **背景音乐**：自动压在人声下，测节拍；音乐比成片短会按小节接长。
+- **清理**：`cleanup.py` 交付前清掉随时能免费重新生成的文件，花钱生成的片段不动。
 
 ## 需要的密钥
 
@@ -34,18 +51,20 @@ git clone https://github.com/yamanacn/oldx-oneshot.git ~/.claude/skills/oldx-one
 获取地址：
 
 - 百炼：https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key
-- RunningHub：使用我的专属邀请链接注册 https://www.runninghub.cn?inviteCode=150e26b6 ，可以额外获得 1000 RH 币。注册后登录，在页面上方选择“API”，在 API 页面点击左上方的“获取密钥”，再在密钥页面新建密钥并复制
+- RunningHub：使用我的专属邀请链接注册 https://www.runninghub.cn?inviteCode=150e26b6 ，可以额外获得 1000 RH 币。注册后登录，在页面上方选择“API”，在 API 页面点击左上方的“获取密钥”。密钥页默认是“企业级-共享”，要在左侧切到“消费级-会员”，复制那里的密钥
 
 接口地址已经写在脚本里，不用自己填。
 
 ## 环境
 
-Python 3、ffmpeg、Node.js 缺什么会由 `scripts/setup_env.py` 自动装好。
+Python 3、ffmpeg、Node.js 缺什么会由 `scripts/setup_env.py` 自动装好。包装用的渲染依赖（约 900 MB）只装一份，所有工程共用。
+
+渲染主要吃 CPU（每一帧是一次浏览器排版加截图），显卡负责绘制和编码；1080p60、5 分钟的片子约 20 分钟。改版阶段用 30 帧出样段。
 
 ## 目录
 
 - `SKILL.md`：技能入口
-- `references/`：三个阶段的详细说明
-- `scripts/`：各阶段脚本
-- `assets/remotion-template/`：包装用的 Remotion 工程模板
-- `tests/`：离线测试
+- `references/`：三个阶段的详细说明（`packaging/design.md` 是包装设计前要想清楚的事）
+- `scripts/`：各阶段脚本；`scripts/pipeline.py` 一个环节一条命令，`scripts/status.py` 看项目走到哪一步
+- `assets/remotion-template/`：包装用的 Remotion 工程模板（只有工具，没有预设的设计）
+- `tests/`：离线测试（不联网、不花钱）

@@ -6,14 +6,35 @@
     "render": "remotion render src/index.ts Main out/main.mp4"
   },
   "dependencies": {
+    "@react-three/drei": "10.7.9",
+    "@react-three/fiber": "9.8.2",
+    "@react-three/postprocessing": "3.2.0",
     "@remotion/cli": "4.0.532",
+    "@remotion/layout-utils": "4.0.532",
+    "@remotion/lottie": "4.0.532",
     "@remotion/media": "4.0.532",
+    "@remotion/motion-blur": "4.0.532",
+    "@remotion/noise": "4.0.532",
+    "@remotion/paths": "4.0.532",
+    "@remotion/shapes": "4.0.532",
+    "@remotion/three": "4.0.532",
+    "@remotion/transitions": "4.0.532",
+    "d3": "7.9.0",
+    "flubber": "0.4.2",
+    "gsap": "3.15.0",
+    "lottie-web": "5.13.0",
+    "pixi.js": "8.13.2",
+    "postprocessing": "6.39.5",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "remotion": "4.0.532"
+    "remotion": "4.0.532",
+    "simplex-noise": "4.0.3",
+    "three": "0.180.0"
   },
   "devDependencies": {
+    "@types/d3": "7.4.3",
     "@types/react": "19.2.2",
+    "@types/three": "0.180.0",
     "typescript": "5.9.3"
   }
 }

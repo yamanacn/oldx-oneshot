@@ -9,7 +9,7 @@
 
 规则：
   * 文字用原文案，一个字不改；句中的逗号、顿号、问号、感叹号保留，句末的句号和波浪号去掉。
-  * 一句一条；超过 --max-chars 的句子在逗号、冒号、分号处分开，不在词中间断。
+  * 一句一条；超过 --max-chars 的句子在逗号、冒号、分号处分开，不在词中间断；数字中间的冒号、逗号（16:9、1,000）不断。
   * 很短的一条（停留不到 --min-sec 秒）并到相邻的一条里，但不把两句完整的话硬拼成一条。
   * 中文和英文、数字之间留一个空格。
   * 每条显示到下一条开始；后面停顿超过 0.9 秒时，说完 0.5 秒就收掉。
@@ -48,7 +48,8 @@ def split_copy(copy, max_chars):
             chunks.append(s)
             continue
         cur = ""
-        for part in (p for p in re.split(r"(?<=[，,：:；;])", s) if p):
+        # 英文逗号、冒号后面紧跟数字时不断开（"16:9"、"1,000" 是一个整体，实测 "16:9" 被拆成 "16" 和 "9 横版……"）
+        for part in (p for p in re.split(r"(?<=[，：；])|(?<=[,:;])(?!\d)", s) if p):
             if cur and vis(cur + part) > max_chars:
                 chunks.append(tidy(cur))
                 cur = part
@@ -56,7 +57,22 @@ def split_copy(copy, max_chars):
                 cur += part
         if cur:
             chunks.append(tidy(cur))
-    return [c for c in chunks if c]
+    # 还超长的（一长串顿号并列、没有逗号）再在顿号处分开
+    out = []
+    for c in chunks:
+        if vis(c) <= max_chars or "、" not in c:
+            out.append(c)
+            continue
+        cur = ""
+        for part in (p for p in re.split(r"(?<=、)", c) if p):
+            if cur and vis(cur + part) > max_chars:
+                out.append(tidy(cur))
+                cur = part
+            else:
+                cur += part
+        if cur:
+            out.append(tidy(cur))
+    return [c for c in out if c]
 
 
 def align(chunks, words):

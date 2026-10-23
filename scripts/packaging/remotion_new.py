@@ -3,6 +3,9 @@
   python scripts/packaging/remotion_new.py --workdir <项目目录>             # 用项目里的人物视频、配音、逐词时间
   python scripts/packaging/remotion_new.py --workdir <项目目录> --check     # 只看依赖装没装，不动任何东西
   python scripts/packaging/remotion_new.py --project <任意目录> --presenter 人物.mp4 --voice 原声.wav --words words.json
+  常用参数：--size 1920x1080（成片尺寸，竖屏人物做横屏片必须给）  --fps 60（成片帧率，锁定）  --bgm 音乐.mp3 --bgm-db 12 --bgm-offset 3.1（背景音乐，自动测节拍）
+            --keep-captions（保留手改过的字幕）
+  项目里有 package_src/presenter_edit.mp4（timeline_edit.py 插过空档的版本）时，--workdir 自动用它和对应的配音、逐词时间。
 
 做三件事：
 1. 把 assets/remotion-template 复制到 <项目目录>/package（已存在就不覆盖，只补缺的固定文件）。
@@ -77,6 +80,12 @@ def main():
     ap.add_argument("--words")
     ap.add_argument("--copy")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--size")
+    ap.add_argument("--fps", type=int)
+    ap.add_argument("--bgm")
+    ap.add_argument("--bgm-db", type=float)
+    ap.add_argument("--bgm-offset", type=float)
+    ap.add_argument("--keep-captions", action="store_true")
     a = ap.parse_args()
 
     ready = runtime_ready()
@@ -96,6 +105,9 @@ def main():
         if (wd / "avatar" / "words_final.json").is_file():
             words = wd / "avatar" / "words_final.json"
         copy = wd / "copy.txt"
+        edited = wd / "package_src"
+        if (edited / "presenter_edit.mp4").is_file() and (edited / "words_edit.json").is_file():   # timeline_edit.py 的产物优先
+            presenter, voice, words = edited / "presenter_edit.mp4", edited / "voice_edit.wav", edited / "words_edit.json"
     elif a.project:
         proj, copy = Path(a.project), Path(a.copy) if a.copy else None
         if not (a.presenter and a.voice and a.words):
@@ -115,10 +127,15 @@ def main():
     cmd = [sys.executable, str(HERE / "remotion_prepare.py"), str(proj), "--presenter", str(presenter), "--voice", str(voice), "--words", str(words)]
     if copy and copy.is_file():
         cmd += ["--copy", str(copy)]
+    for flag, val in (("--size", a.size), ("--fps", a.fps), ("--bgm", a.bgm), ("--bgm-db", a.bgm_db), ("--bgm-offset", a.bgm_offset)):
+        if val is not None:
+            cmd += [flag, str(val)]
+    if a.keep_captions:
+        cmd.append("--keep-captions")
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
     if r.returncode:
         sys.exit("放素材失败：" + (r.stderr or r.stdout)[-600:])
-    print(json.dumps({"project": str(proj), "template_files_added": len(made), "runtime": str(RUNTIME), "installed": installed,
+    print(json.dumps({"project": str(proj), "presenter": str(presenter), "template_files_added": len(made), "runtime": str(RUNTIME), "installed": installed,
                       "prepare": json.loads(r.stdout.strip().splitlines()[-1])}, ensure_ascii=False))
 
 

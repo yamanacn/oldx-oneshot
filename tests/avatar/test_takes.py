@@ -78,7 +78,7 @@ out = run_main(["--workdir", wd, "--only", "1"])
 check("预览：不收历史、不改文件", open(os.path.join(od, "clips", "seg_01.mp4"), "rb").read() == b"OLD-1" and not os.path.isdir(os.path.join(od, "takes"))
       and "收进历史版本" in out and "工作流版本：新版" in out)
 
-out = run_main(["--workdir", wd, "--only", "1", "--yes", "--note", "第二版"])
+out = run_main(["--workdir", wd, "--only", "1", "--voice-approved", "测试：配音可以", "--yes", "--note", "第二版"])
 t1 = os.path.join(od, "takes", "seg_01", "take_01.mp4")
 meta1 = json.load(open(os.path.join(od, "takes", "seg_01", "take_01.json"), encoding="utf-8")) if os.path.isfile(t1) else {}
 check("重跑第 1 段：旧片段收进历史版本 1，带着当时的种子、工作流、提示词",
@@ -105,9 +105,40 @@ open(os.path.join(od, "prompts", "segment_02.txt"), "w", encoding="utf-8").write
 check("提示词改过但片段没重跑 → 列表里标出来", "现在的提示词和生成它时不一样" in TK.listing(od, json.load(open(os.path.join(od, "plan.json"), encoding="utf-8"))))
 
 wd2, od2 = make_project()
-run_main(["--workdir", wd2, "--all", "--yes"])
+run_main(["--workdir", wd2, "--all", "--voice-approved", "测试：配音可以", "--yes"])
 check("--all：两段都重跑，旧片段都收进历史", all(os.path.isfile(os.path.join(od2, "takes", "seg_%02d" % i, "take_01.mp4")) for i in (1, 2))
       and all(open(os.path.join(od2, "clips", "seg_%02d.mp4" % i), "rb").read() == b"NEW-%d" % i for i in (1, 2)))
+
+# ---------------------------------------------------------------- 配音试听确认（写在代码里的门槛）
+def run_code(args):
+    try:
+        run_main(args)
+        return 0
+    except SystemExit as e:
+        return e.code
+
+
+wd3, od3 = make_project()
+os.makedirs(os.path.join(wd3, "out"))
+open(os.path.join(wd3, "out", "merged.wav"), "wb").write(b"VOICE-A")
+before = open(os.path.join(od3, "result.json"), encoding="utf-8").read()
+code = run_code(["--workdir", wd3, "--only", "1", "--yes"])
+check("没有配音确认：--yes 退出码 5，不提交，result.json 和片段都不动",
+      code == 5 and open(os.path.join(od3, "result.json"), encoding="utf-8").read() == before
+      and open(os.path.join(od3, "clips", "seg_01.mp4"), "rb").read() == b"OLD-1" and not os.path.isdir(os.path.join(od3, "takes")), code)
+out = run_main(["--workdir", wd3, "--only", "1"])
+check("预览里写出配音还没确认，提示和费用一起问", "还没有用户确认这一版配音" in out)
+code = run_code(["--workdir", wd3, "--only", "1", "--voice-approved", "配音可以，开始吧", "--yes"])
+vr = json.load(open(os.path.join(wd3, "voice_review.json"), encoding="utf-8"))
+check("带上用户原话：提交成功，原话和配音指纹记进 voice_review.json",
+      code == 0 and vr.get("approved") == "配音可以，开始吧" and vr.get("audio_sha")
+      and open(os.path.join(od3, "clips", "seg_01.mp4"), "rb").read() == b"NEW-1", (code, vr))
+check("确认过之后预览显示用户的原话", "配音可以，开始吧" in run_main(["--workdir", wd3, "--only", "2"]))
+code = run_code(["--workdir", wd3, "--only", "2", "--yes"])
+check("配音没变：重跑别的段不用再给原话", code == 0 and open(os.path.join(od3, "clips", "seg_02.mp4"), "rb").read() == b"NEW-2", code)
+open(os.path.join(wd3, "out", "merged.wav"), "wb").write(b"VOICE-B")
+code = run_code(["--workdir", wd3, "--only", "1", "--yes"])
+check("配音重新合成过：旧的确认作废，退出码 5", code == 5, code)
 
 print("\n通过 %d/%d" % (sum(cases), len(cases)))
 sys.exit(0 if all(cases) else 1)

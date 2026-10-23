@@ -44,7 +44,7 @@ def main():
     if not os.path.isfile(tp):
         _cli.fail(_cli.ERROR, "没有 %s：先运行 synth.py --yes 合成配音" % tp)
     tl = json.load(open(tp, encoding="utf-8"))
-    redo = "要调速就重新合成：synth.py --speed <倍数> --yes。"
+    redo = "音频被改过就从合成重来：synth.py --yes（本技能不做调速）。"
     checked = _util.check_audio(os.path.join(out, "merged.wav"), tl.get("audio_sha"), tl.get("total_seconds"), "合成", redo)
     for s in tl["segments"]:
         _util.check_audio(os.path.join(out, "seg_%02d.wav" % s["i"]), s.get("audio_sha"), None, "合成", redo)
@@ -106,7 +106,7 @@ def main():
         ps["before"] = nxt[0]["word"] if nxt else None
     mp = os.path.join(out, "merged.wav")
     json.dump({"unit": "seconds", "model": C.ASR_MODEL, "total_seconds": round(_util.wav_seconds(mp), 3),
-               "speed": tl.get("speed", 1.0), "audio_sha": _util.file_sha(mp),
+               "audio_sha": _util.file_sha(mp),
                "segments": seg_info, "words": words, "pauses": pauses},
               open(os.path.join(out, "words.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     if a.out == "out":

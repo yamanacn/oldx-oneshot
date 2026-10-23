@@ -50,13 +50,17 @@ NEXT = {
     "split_check.py": ("python scripts/voice/synth.py --workdir %s（先预览）" % W, None),
     "synth.py": ("python scripts/voice/align_words.py --workdir %s --yes" % W, "确认后：python scripts/voice/synth.py --workdir %s --yes" % W),
     "align_words.py": ("python scripts/voice/verify_audio.py --workdir %s" % W, "确认后：python scripts/voice/align_words.py --workdir %s --yes" % W),
-    "verify_audio.py": ("处理 issues 里的问题；没有问题就做数字人：python scripts/avatar/check_setup.py", None),
+    "verify_audio.py": ("处理 issues 里的问题；没有问题就继续数字人的免费步骤：python scripts/avatar/check_setup.py。"
+                        "用户开头说要先听配音的，现在就停下把 out/merged.wav 发给他试听；否则在提交生成前和费用一起请他试听确认", None),
     "check_setup.py": ("python scripts/avatar/prepare_image.py --image <图片> --workdir %s --mouth-box x0,y0,x1,y1" % W, None),
     "prepare_image.py": ("打开 crop_check 看裁剪；没问题就运行 python scripts/pipeline.py segments --workdir %s" % W, None),
     "build_prompts.py": ("python scripts/avatar/run_avatar.py --workdir %s（预览，报费用）" % W, None),
-    "run_avatar.py": ("python scripts/pipeline.py finish --workdir %s" % W, "把预览里的段数和预计费用告诉用户，用户确认后：python scripts/avatar/run_avatar.py --workdir %s --yes" % W),
+    "run_avatar.py": ("python scripts/pipeline.py finish --workdir %s" % W, "停下：把预览里的段数和预计费用告诉用户；配音还没确认的（预览里 voice_approved 为空），把 out/merged.wav 一起发给用户试听。"
+                    "等用户回复确认后再提交：python scripts/avatar/run_avatar.py --workdir %s --voice-approved \"用户回复的原话\" --yes"
+                    "（配音已确认过的不用再带 --voice-approved）" % W),
     "finalize.py": ("python scripts/avatar/qa_video.py --workdir %s" % W, None),
     "qa_video.py": ("用 Read 看 must_view 里的图；anomalies.json 里的时间段留给包装遮盖，然后进入包装：python scripts/packaging/remotion_new.py --workdir %s" % W, None),
+    "cleanup.py": ("交付", None),
     "takes.py": ("换了版本的话：python scripts/pipeline.py finish --workdir %s" % W, None),
 }
 

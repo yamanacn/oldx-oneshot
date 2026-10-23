@@ -40,7 +40,10 @@ def grab(path, t, size=None):
 def check_audio(spec, video, dur):
     src0 = float(spec.get("source_start", 0.0))
     n = min(dur, 120.0)                                   # 取开头最多 2 分钟
-    a, b = pcm(spec["presenter"], src0, n), pcm(video, 0.0, n)
+    ref = spec["presenter"]
+    if not media_info(ref)["has_audio"] and spec.get("voice"):
+        ref, src0 = spec["voice"], 0.0                    # 人物视频是静音的（声音单独放在 voice.wav）：和原声文件比
+    a, b = pcm(ref, src0, n), pcm(video, 0.0, n)
     m = min(len(a), len(b))
     if m < 16000:
         return {"status": "not_run", "reason": "成片或人物源没有足够的音频"}
@@ -54,7 +57,32 @@ def check_audio(spec, video, dur):
             "compared_seconds": round(m / 16000, 1)}
 
 
+def check_card_motion(spec, video, W, H):
+    """人物卡：每段停稳后，卡片区域应当跟着人物源一起在动（卡住 = 人物画面没对上时钟）"""
+    rows = []
+    for c in spec["cards"]:
+        b = c["box"]
+        x0, y0, x1, y1 = max(0, int(b["x"])), max(0, int(b["y"])), min(W, int(b["x"] + b["w"])), min(H, int(b["y"] + b["h"]))
+        if x1 - x0 < 40 or y1 - y0 < 40 or c["end"] - c["start"] < 1.2:
+            continue                                      # 出画或太短：不查
+        moving_src = moving_box = samples = 0
+        for t in np.linspace(c["start"] + 0.2, c["end"] - 0.5, 5):
+            f1, f2 = grab(video, t, (W, H)), grab(video, t + 0.3, (W, H))
+            g1, g2 = grab(spec["presenter"], t, (480, 270)), grab(spec["presenter"], t + 0.3, (480, 270))
+            if f1 is None or f2 is None or g1 is None or g2 is None:
+                continue
+            samples += 1
+            moving_box += float(np.abs(f1[y0:y1, x0:x1].astype(np.float32) - f2[y0:y1, x0:x1]).mean()) > 0.8
+            moving_src += float(np.abs(g1.astype(np.float32) - g2).mean()) > 0.8
+        status = "not_run" if not samples else "needs_fix" if moving_src >= 2 and moving_box == 0 else "passed"
+        rows.append({"segment": [c["start"], c["end"]], "pose": c["pose"], "status": status, "samples": samples,
+                     "source_moving": int(moving_src), "card_moving": int(moving_box)})
+    return rows
+
+
 def check_pip_motion(spec, video, W, H):
+    if spec.get("cards"):
+        return check_card_motion(spec, video, W, H)
     pip, segs = spec["pip"], spec["segments"]
     x, y, w, h, *_ = pr.geometry(1.0, W, H, pip)
     x0, y0, x1, y1 = int(x), int(y), int(x + w), int(y + h)
@@ -84,6 +112,21 @@ def check_pip_motion(spec, video, W, H):
 
 
 def transition_sheets(spec, video, out_dir, W, H):
+    if spec.get("cards"):     # 人物卡：每次换站位前后各抽 6 帧
+        sheets = []
+        for c in spec["cards"]:
+            t0 = c["start"] - spec["pip"]["transition"]
+            cells = []
+            for t in [t0 - 0.1 + i * 0.17 for i in range(6)]:
+                f = grab(video, t, (480, round(480 * H / W)))
+                if f is not None:
+                    cv2.putText(f, f"{t:.2f}s", (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+                    cells.append(f)
+            if cells:
+                path = Path(out_dir) / f"card_{c['pose']}_{t0:08.2f}.jpg"
+                imwrite(path, np.hstack(cells))
+                sheets.append(str(path))
+        return sheets
     pip, segs = spec["pip"], spec["segments"]
     T = pip["transition"]
     runs = {}

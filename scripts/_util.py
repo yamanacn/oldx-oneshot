@@ -47,7 +47,7 @@ def media_seconds(path):
 
 
 # ---------------------------------------------------------------- 音频指纹：合成 → 对齐 → 分段 → 生成，每一步核对上一步的音频没被改过
-AUDIO_EDIT_RULE = ("音频的改动（调速等）只能在配音阶段做：用 synth.py --speed <倍数> --yes 重新出音频，"
+AUDIO_EDIT_RULE = ("音频只能由配音阶段的 synth.py 生成，本技能不做调速：要改就重新合成（synth.py --yes），"
                    "再依次跑 align_words.py --yes、plan_segments.py。不要在对齐或分段之后再改音频，"
                    "否则停顿和切点对不上，生成的视频会有明显的停顿。")
 
@@ -87,7 +87,7 @@ def check_audio(path, expect_sha, expect_seconds, stage, redo):
     if now is not None and expect_seconds:
         how = "时长 %.1f 秒 → %.1f 秒" % (expect_seconds, now)
         if abs(now / expect_seconds - 1) > 0.02:
-            how += "，像是调过速"
+            how += "，像是被调过速（本技能不做调速）"
     else:
         how = "内容变了"
     _cli.fail(_cli.ERROR, "%s 在%s之后被改过（%s）。%s\n%s" % (path, stage, how, AUDIO_EDIT_RULE, redo))

@@ -12,7 +12,7 @@
     多一段能让切点都落在句末、逗号处时，宁可多一段。
   * 某个段数下找不到合适的停顿使每段 ≤14 秒时，才依次放宽：先允许在句末标点处断（没有停顿），最后才允许在词边界断。
 核对（不依赖文件里的指纹）：从配音里检测出的停顿，超过 20% 的中点落在某个词中间，就说明 words.json 和 merged.wav
-不是同一份音频的结果（实测：正常 4%–7%；整体偏 0.2 秒 31%；调速后没重新对齐 48%–69%），以退出码 1 停下。
+不是同一份音频的结果（实测：正常 4%–7%；整体偏 0.2 秒 31%；音频被调过速、没重新对齐 48%–69%），以退出码 1 停下。
 产物：<workdir>/avatar/plan.json、seg_NN.wav（从 merged.wav 精确切出的每段音频）。
 plan.json 记下整条和每段音频的指纹，run_avatar.py / finalize.py 会再核对一次。
 """
@@ -117,7 +117,7 @@ def main():
     wj = json.load(open(wjp, encoding="utf-8"))
     words = wj["words"]
     if not _util.check_audio(mp, wj.get("audio_sha"), wj.get("total_seconds"), "逐词对齐",
-                             "要调速就重新合成：synth.py --speed <倍数> --yes，再跑 align_words.py --yes。"):
+                             "音频被改过就从合成重来：synth.py --yes，再跑 align_words.py --yes（本技能不做调速）。"):
         if not a.legacy:
             _cli.report(next="python scripts/voice/align_words.py --workdir %s --yes" % a.workdir)
             _cli.fail(_cli.ERROR, "words.json 里没有音频指纹：它不是现在的 align_words.py 写出来的（旧版本，或者被手工改过）。"
@@ -183,7 +183,7 @@ def main():
                      "words": [{"word": x["word"], "start": round(x["start"] - s, 3), "end": round(x["end"] - s, 3)} for x in ws]})
     stats = {k: sum(1 for c in cuts if c[2] == k) for k in RANK_COST}
     plan = {"max_seconds": a.max, "total_seconds": round(total, 3), "cut_tier": tier_used, "cut_punct": stats,
-            "speed": tl.get("speed", wj.get("speed", 1.0)), "audio": mp, "audio_sha": _util.file_sha(mp), "segments": segs}
+            "audio": mp, "audio_sha": _util.file_sha(mp), "segments": segs}
     json.dump(plan, open(os.path.join(od, "plan.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     C_ = {0: "整段，无需拆分", 1: "全部在停顿处断开", 2: "有切点用了句末标点（该档段数下找不到合适停顿）", 3: "有切点用了词边界（找不到停顿和标点）"}
     print("总长 %.1f 秒，上限 %.0f 秒 → %d 段（%s）；切点：句末 %d、逗号 %d、无标点 %d"

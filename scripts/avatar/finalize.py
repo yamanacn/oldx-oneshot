@@ -143,7 +143,7 @@ def main():
     script = os.path.join(od, "_finalize_filter.txt")
     open(script, "w", encoding="utf-8").write(fc)
     cmd += ["-filter_complex_script", script, "-map", "[v]", "-map", "[a]", "-t", "%.4f" % total,
-            "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+            "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart", final]
     try:
         subprocess.run(cmd, check=True)

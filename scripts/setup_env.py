@@ -8,7 +8,8 @@
 - Python 包（numpy、opencv-python、Pillow、imageio-ffmpeg、av、librosa）——用当前这个 Python 的 pip；
 - ffmpeg——不单独装，用 imageio-ffmpeg 自带的那份；
 - Node.js（只有包装阶段要）——Windows 上用 winget 装长期支持版；
-- 包装用的渲染依赖——装在 ~/.digital-human/remotion-runtime，所有片子共用一份（约 700 MB）；
+- 包装用的渲染依赖——装在 ~/.digital-human/remotion-runtime，所有片子共用一份（约 900 MB）：Remotion，以及 three.js / R3F / drei /
+  后期特效、GSAP、Lottie、PixiJS、d3、flubber、simplex-noise 和 Remotion 的转场、路径、形状、噪声、运动模糊扩展；
 - 渲染用的无头浏览器——由渲染工具自己下载。
 
 不会自动处理的：两个密钥（必须由用户提供）。
@@ -39,7 +40,7 @@ RUNTIME = ROOT / "remotion-runtime"
 PY = {
     "voice": {"numpy": "numpy", "imageio_ffmpeg": "imageio-ffmpeg", "librosa": "librosa"},
     "avatar": {"numpy": "numpy", "cv2": "opencv-python", "PIL": "Pillow", "imageio_ffmpeg": "imageio-ffmpeg"},
-    "packaging": {"numpy": "numpy", "cv2": "opencv-python", "PIL": "Pillow", "imageio_ffmpeg": "imageio-ffmpeg", "av": "av"},
+    "packaging": {"numpy": "numpy", "cv2": "opencv-python", "PIL": "Pillow", "imageio_ffmpeg": "imageio-ffmpeg", "av": "av", "librosa": "librosa"},   # librosa：背景音乐测节拍
 }
 
 

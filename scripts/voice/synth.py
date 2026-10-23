@@ -11,8 +11,7 @@
   * 固定参数在 common.py：模型、指令（语速较快、不要播音腔）、48k wav。
   * 情绪标签只用一个：以问号结尾的句子前加 QUESTION_TAG（让问句带疑问语气），只加在发给接口的文字里。
   * 标签有时会引出文案里没有的语气词（嘿、哼、哎……）：合并之前对每段识别一次，把多出来的这一声剪掉（fillers.py）；--keep-fillers 不剪。
-  * 要加速/减速只能用 --speed（例如 1.1）：剪完语气词后整体调速（只变快慢、不变调），再拼接、写时间轴。
-    后面的对齐、分段、生成都基于调速后的音频，并且会核对音频指纹；在对齐或分段之后再改音频会被拦下。
+  * 不做整体调速：配音就是合成出来的原速。后面的对齐、分段、生成都会核对音频指纹，合成之后再改音频会被拦下。
 """
 import argparse
 import hashlib
@@ -36,7 +35,6 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common as C
 
-SPEED_MIN, SPEED_MAX = 0.5, 2.0       # ffmpeg atempo 一级能处理的范围
 _lock = threading.Lock()
 _next_submit = [0.0]
 FATAL = {401, 403}
@@ -75,8 +73,17 @@ def speakable(t):
     """只改发给接口的文字、不改文案：换行前没有标点的（标题行）补一个句号，不然标题和下一行连成一句、中间没有停顿；
     行首的列表序号“1. ”改成“1、”，免得念成“一点”。"""
     t = re.sub(r"(?m)^(\s*(?:\[[a-z_]+\])?\s*)(\d{1,2})[.．]\s*", r"\1\2、", t.strip())
-    t = re.sub(r"(\S)\s*\n\s*", lambda m: m.group(1) + ("" if m.group(1) in "。！？!?，,、；;：:…”」』）)]" else "。"), t)
+    t = re.sub(r"(\S)\s*\n\s*", lambda m: _join_line(m.group(1)), t)
     return t.replace("\n", "")
+
+
+def _join_line(c):
+    """换行处怎么接：中文标点直接接；英文标点后补一个空格（英文句子之间要有空格）；没有标点的补句号，英文行补“. ”。"""
+    if c in "。！？，、；：…”」』）":
+        return c
+    if c in ".!?,;:)]\"'":
+        return c + " "
+    return c + (". " if ord(c) < 128 else "。")
 
 
 def build_text(raw):
@@ -122,7 +129,25 @@ def archive_previous(out, fp):
     for name in ("words.json", "verify.json"):                     # 这两份属于旧音频，留在原处会误导后面的步骤
         if os.path.isfile(os.path.join(out, name)):
             shutil.move(os.path.join(out, name), os.path.join(dest, name))
+    prune_previous(os.path.dirname(dest))
     return dest
+
+
+KEEP_PREV = 3        # 旧配音最多留几版：再早的删掉（缓存还在，按原来的设置重合成不花钱）
+
+
+def prune_previous(root, keep=KEEP_PREV):
+    """<out>_prev/ 下只留最近 keep 版，免得反复试听调整时越攒越多"""
+    try:
+        olds = sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
+    except OSError:
+        return []
+    gone = olds[:-keep] if len(olds) > keep else []
+    for d in gone:
+        shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+    if gone:
+        print("旧配音只留最近 %d 版，删掉了更早的 %d 版：%s" % (keep, len(gone), "、".join(gone)))
+    return gone
 
 
 class Fatal(Exception):
@@ -206,22 +231,6 @@ def trim(x, sr):
     return x[s:e], s
 
 
-def change_speed(x, sr, speed, cache_dir):
-    """整体调速（atempo：只变快慢、不变调）。结果按 内容+倍数 缓存在 cache/。"""
-    if abs(speed - 1.0) < 1e-6:
-        return x
-    key = hashlib.sha256(x.tobytes() + ("|%.4f|%d" % (speed, sr)).encode()).hexdigest()[:16]
-    dst = os.path.join(cache_dir, key + ".speed.wav")
-    if not os.path.isfile(dst):
-        src, tmp = dst[:-4] + ".in.wav", dst[:-4] + ".tmp.wav"
-        write_wav(src, x, sr)
-        subprocess.run([C.ffmpeg(), "-y", "-v", "error", "-i", src, "-filter:a", "atempo=%.4f" % speed,
-                        "-ar", str(sr), "-ac", "1", "-c:a", "pcm_s16le", tmp], check=True)
-        os.replace(tmp, dst)
-        os.remove(src)
-    return read_wav(dst)[0]
-
-
 def concat_wavs(paths, dst, gap=0.0):
     parts, sr = [], C.SAMPLE_RATE
     for i, p in enumerate(paths):
@@ -238,14 +247,10 @@ def main():
     ap.add_argument("--paragraphs")
     ap.add_argument("--workers", type=int, default=C.WORKERS)
     ap.add_argument("--gap", type=float, default=C.GAP_SECONDS)
-    ap.add_argument("--speed", type=float, default=1.0,
-                    help="整体调速倍数，例如 1.1（只变快慢、不变调）。要调速只能用这个参数，不要在对齐或分段之后再改音频")
     ap.add_argument("--yes", action="store_true", help="确认合成（联网，会产生费用）。不加就只预览：打印每段实际发给接口的文字，不联网")
     ap.add_argument("--keep-fillers", action="store_true", help="不剪标签引出来的多余语气词（默认会剪，见 fillers.py）")
     ap.add_argument("--variant", help="另出一版：结果写到 out_<名字>/，不覆盖 out/；后面的对齐和核对加 --out out_<名字>")
     a = ap.parse_args()
-    if not SPEED_MIN <= a.speed <= SPEED_MAX:
-        _cli.fail(_cli.USAGE, "--speed 只能在 %.1f–%.1f 之间（现在是 %s）" % (SPEED_MIN, SPEED_MAX, a.speed))
     wd = a.workdir
     pj = a.paragraphs or os.path.join(wd, "paragraphs.json")
     vj = os.path.join(wd, "voice.json")
@@ -280,11 +285,9 @@ def main():
             print("\n--- 段%d（%d 字）%s---\n%s" % (i, len(p), "（已缓存，不用重新合成）" if i in hits else "", build_text(p)))
         need = [i for i in range(1, len(paras) + 1) if i not in hits]
         print("\n[预览] 没有联网，没有合成。指令：%s" % C.INSTRUCTION)
-        if a.speed != 1.0:
-            print("倍速 %.2f：合成后整体调速，之后的对齐、分段都基于调速后的音频。" % a.speed)
         print("要合成 %d 段、%d 字（%d 段已缓存）。确认后加 --yes。" % (len(need), sum(len(paras[i - 1]) for i in need), len(hits)))
         _cli.report(preview=True, segments=len(paras), to_synthesize=need, cached=hits,
-                    chars_to_synthesize=sum(len(paras[i - 1]) for i in need), instruction=C.INSTRUCTION, speed=a.speed)
+                    chars_to_synthesize=sum(len(paras[i - 1]) for i in need), instruction=C.INSTRUCTION)
         return
     key = C.require_key()
     cache = os.path.join(wd, "cache")
@@ -331,8 +334,6 @@ def main():
             notes += ["剪掉多余语气词 " + n for n in c[1]]
 
     fp = hashlib.sha256("|".join(os.path.basename(p) for p in results).encode()).hexdigest()[:16] + "|%.2f" % a.gap
-    if a.speed != 1.0:
-        fp += "|x%.3f" % a.speed                                    # 倍速变了也算换了一版音频
     try:
         arch = archive_previous(out, fp)
         if arch:
@@ -343,7 +344,6 @@ def main():
     sr = C.SAMPLE_RATE
     for i, (p, txt) in enumerate(zip(results, paras), 1):
         x, sr = read_wav(p)
-        x = change_speed(x, sr, a.speed, cache)
         sp = os.path.join(out, "seg_%02d.wav" % i)
         safe_write_wav(sp, x, sr)
         x, cut = trim(x, sr)
@@ -362,19 +362,18 @@ def main():
         _cli.report(locked=os.path.join(out, "merged.wav"))
         sys.exit(_cli.FILE_LOCKED)
     json.dump({"voice_id": voice, "model": C.MODEL, "instruction": C.INSTRUCTION, "question_tag": C.QUESTION_TAG, "questions": nq, "gap": a.gap, "fingerprint": fp,
-               "speed": a.speed, "audio_sha": _util.file_sha(os.path.join(out, "merged.wav")),
+               "audio_sha": _util.file_sha(os.path.join(out, "merged.wav")),
                "total_seconds": round(t, 3), "segments": segs}, open(os.path.join(out, "timeline.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     if not a.variant:
         C.update_meta(wd, voice_id=voice, audio=os.path.join(out, "merged.wav"), total_seconds=round(t, 3),
                       segments=len(paras))
-    print("\n完成：%d 段，合计 %.1f 秒%s，耗时 %.1fs（命中缓存 %d 段）"
-          % (len(paras), t, "（已按 %.2f 倍速）" % a.speed if a.speed != 1.0 else "", time.time() - t0, cached))
+    print("\n完成：%d 段，合计 %.1f 秒，耗时 %.1fs（命中缓存 %d 段）" % (len(paras), t, time.time() - t0, cached))
     print("合并文件：", os.path.join(out, "merged.wav"))
     for n in notes:
         print("注意：", n)
     _cli.report(merged=os.path.join(out, "merged.wav"), timeline=os.path.join(out, "timeline.json"),
-                segments=len(paras), total_seconds=round(t, 3), cached=cached, notes=notes, speed=a.speed)
+                segments=len(paras), total_seconds=round(t, 3), cached=cached, notes=notes)
 
 
 if __name__ == "__main__":

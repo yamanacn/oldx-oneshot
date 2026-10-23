@@ -1,6 +1,6 @@
 """一条命令跑完一个环节：模型不用自己处理音频、也不用记先后顺序，照着结果里的 next 做就行。
 
-  python scripts/pipeline.py voice    --workdir <项目目录> [--speed 1.1] [--yes] [--user-split]
+  python scripts/pipeline.py voice    --workdir <项目目录> [--yes] [--user-split]
       拆段（没有 paragraphs.json 时自动拆）→ 拆段把关 → 合成（不加 --yes 只预览）→ 逐词对齐 → 核对
   python scripts/pipeline.py segments --workdir <项目目录> [--legacy]
       分段（停顿以配音为准、切点优先句末，并核对逐词时间和配音是同一份）
@@ -60,7 +60,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", choices=["voice", "segments", "finish"])
     ap.add_argument("--workdir", required=True)
-    ap.add_argument("--speed", type=float, help="voice：整体调速倍数（用户要求了才用）")
     ap.add_argument("--user-split", action="store_true", help="voice：用户明确要求按他的分段配")
     ap.add_argument("--yes", action="store_true", help="voice：确认合成和识别（会产生少量费用）。不加就停在合成预览")
     ap.add_argument("--legacy", action="store_true", help="segments / finish：旧项目，结果文件里没有音频指纹也继续")
@@ -73,15 +72,15 @@ def main():
             steps.append(("拆段", "voice/split_text.py", ["--workdir", wd] + (["--user-split"] if a.user_split else [])))
         steps.append(("拆段把关", "voice/split_check.py", ["--copy", os.path.join(wd, "copy.txt"), "--paragraphs", os.path.join(wd, "paragraphs.json")]
                       + (["--user-split"] if a.user_split else [])))
-        sp = ["--speed", str(a.speed)] if a.speed else []
-        steps.append(("合成", "voice/synth.py", ["--workdir", wd] + sp + (["--yes"] if a.yes else [])))
+        steps.append(("合成", "voice/synth.py", ["--workdir", wd] + (["--yes"] if a.yes else [])))
         steps.append(("逐词对齐", "voice/align_words.py", ["--workdir", wd, "--yes"]))
         steps.append(("核对", "voice/verify_audio.py", ["--workdir", wd]))
         done, last = run_steps(steps)
         if last.get("preview"):
-            _cli.report(next="确认后：python scripts/pipeline.py voice --workdir %s%s --yes" % (wd, " --speed %s" % a.speed if a.speed else ""))
+            _cli.report(next="确认后：python scripts/pipeline.py voice --workdir %s --yes" % wd)
             return
-        _cli.report(steps=done, issues=last.get("issues"), next="处理核对里的问题（issues）；没有问题就做数字人：python scripts/avatar/check_setup.py")
+        _cli.report(steps=done, issues=last.get("issues"), next="处理核对里的问题（issues）；没有问题就继续数字人的免费步骤：python scripts/avatar/check_setup.py。"
+                         "用户开头说要先听配音的，现在就停下把 out/merged.wav 发给他试听；否则在提交生成前和费用一起请他试听确认")
     elif a.stage == "segments":
         done, last = run_steps([("分段", "avatar/plan_segments.py", ["--workdir", wd] + lg)])
         _cli.report(steps=done, segments=last.get("segments"), cut_punct=last.get("cut_punct"), next=last.get("next"))

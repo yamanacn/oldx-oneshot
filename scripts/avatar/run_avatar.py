@@ -1,10 +1,15 @@
 """把各段提交到 RunningHub 的数字人应用，按会员并发数并行；有完整的重试与断点续跑。
 
   python run_avatar.py --workdir <项目目录>                  # 只做检查和预览，不联网、不花钱
-  python run_avatar.py --workdir <项目目录> --yes            # 上传文件并提交（会产生费用）
+  python run_avatar.py --workdir <项目目录> --voice-approved "用户试听后回复的原话" --yes   # 上传文件并提交（会产生费用）
   python run_avatar.py --workdir <项目目录> --yes --only 2   # 只重跑第 2 段，其余沿用已有结果
   python run_avatar.py --workdir <项目目录> --yes --only 2 --seed random   # 重跑第 2 段并换一个随机种子（提示词不用改）
   python run_avatar.py --workdir <项目目录> --yes --all      # 全部重跑（旧片段都会收进历史，不会丢）
+
+配音试听确认（写在代码里）：第一次提交前，--yes 必须带 --voice-approved，内容是用户试听配音后在对话里回复的原话
+（例如“配音可以”；用户一开始就说过“配音不用给我听，直接做”也算，填那句话）。用户还没回复就停下等，不能自己编。
+这句话和当时 out/merged.wav 的指纹记进 <项目目录>/voice_review.json；配音没变时之后重跑某几段不用再给，
+配音重新合成过（换了语气、改了文案……），旧的确认作废，要请用户再听一次。
 
 历史版本：重跑某段之前，它现在的片段会自动收进 avatar/takes/seg_NN/（连同当时的种子、工作流版本、提示词），
 不会被覆盖。想换回以前的版本用 takes.py。
@@ -38,6 +43,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import _cli  # noqa: E402
+import _util  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common as C
@@ -236,6 +242,45 @@ def cancel_tasks(od, state, only):
         sys.exit(_cli.REMOTE_FAILED)
 
 
+VOICE_REVIEW = "voice_review.json"
+
+
+def voice_approval(wd):
+    """voice_review.json 里对这一版 out/merged.wav 的确认（用户的原话）；没有或配音变了返回 None"""
+    merged = os.path.join(wd, "out", "merged.wav")
+    try:
+        rec = json.load(open(os.path.join(wd, VOICE_REVIEW), encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if rec.get("approved") and os.path.isfile(merged) and rec.get("audio_sha") == _util.file_sha(merged):
+        return rec["approved"]
+    return None
+
+
+def check_voice_approval(wd, text):
+    """提交之前核对用户试听过这一版配音：本次给了 --voice-approved（记进 voice_review.json），或者记录里的指纹和现在的
+    out/merged.wav 一致。都没有就以 need_user 退出，不提交、不花钱。返回用户的原话。"""
+    merged = os.path.join(wd, "out", "merged.wav")
+    sha = _util.file_sha(merged) if os.path.isfile(merged) else None
+    rp = os.path.join(wd, VOICE_REVIEW)
+    text = (text or "").strip()
+    if text:
+        json.dump({"approved": text, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "audio": os.path.abspath(merged), "audio_sha": sha},
+                  open(rp, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        _cli.report(voice_approved=text)
+        return text
+    ok = voice_approval(wd)
+    if ok:
+        _cli.report(voice_approved=ok)
+        return ok
+    rec = os.path.isfile(rp)
+    why = "配音在用户确认之后重新合成过，旧的确认作废，要请用户再听一次" if rec else "还没有用户试听配音的确认"
+    _cli.report(wait_for_user=True, next="停下，不要提交：把 %s 的路径和各段时长、语速发给用户试听，等用户回复。用户确认后再用 "
+                "--voice-approved \"用户回复的原话\" --yes 提交（预览里的段数和预计费用一起告诉用户）" % merged)
+    _cli.fail(_cli.NEED_USER, "提交生成人物视频之前，要用户先试听配音并确认（%s）。--yes 必须带 --voice-approved \"用户回复的原话\"；"
+                              "用户还没回复就停下等，不要自己填。" % why)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workdir", required=True)
@@ -250,6 +295,7 @@ def main():
     ap.add_argument("--timeout-min", type=int, default=45)
     ap.add_argument("--queue-min", type=int, default=30, help="并发名额被占满时最多排队等几分钟（默认 30）")
     ap.add_argument("--cancel", action="store_true", help="取消已提交、还没完成的云端任务（配合 --only 只取消某几段）")
+    ap.add_argument("--voice-approved", default="", help="用户试听配音后回复的原话（第一次提交时 --yes 必须带上）")
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--legacy", action="store_true", help="旧项目：plan.json 里没有音频指纹也继续")
     a = ap.parse_args()
@@ -258,7 +304,9 @@ def main():
         return cancel_tasks(od, State(os.path.join(od, "result.json")), a.only)
     plan = json.load(open(os.path.join(od, "plan.json"), encoding="utf-8"))
     info = json.load(open(os.path.join(od, "image_info.json"), encoding="utf-8"))
-    C.verify_plan_audio(a.workdir, plan, a.legacy)         # 分段之后音频被改过（比如调速）就停下，不提交
+    C.verify_plan_audio(a.workdir, plan, a.legacy)         # 分段之后音频被改过就停下，不提交
+    if a.yes:
+        check_voice_approval(a.workdir, a.voice_approved)  # 在改动 result.json 之前就核对：被拦下时什么都不动
     segs = plan["segments"]
     prompts = {}
     for s in segs:
@@ -340,8 +388,14 @@ def main():
                 reused=sorted(done), resumable=resumable, will_archive=to_archive, auto_seed=auto_seed,
                 todo_seconds=round(sum(s["duration"] for s in todo), 2))
     if not a.yes:
+        approved = voice_approval(a.workdir)
+        if approved:
+            print("配音试听：用户已确认（“%s”）。" % approved)
+        else:
+            print("配音试听：还没有用户确认这一版配音。提交前先停下，把 out/merged.wav 发给用户试听，和段数、预计费用一起问；"
+                  "用户回复确认后用 --voice-approved \"用户回复的原话\" --yes 提交。")
         print("[预览] 没有联网，也没有产生费用。确认后加 --yes。")
-        _cli.report(preview=True)
+        _cli.report(preview=True, voice_approved=approved, wait_for_user=not approved)
         return
     if not todo:
         print("没有需要提交的段。")
